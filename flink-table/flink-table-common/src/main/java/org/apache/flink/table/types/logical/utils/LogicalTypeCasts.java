@@ -43,6 +43,7 @@ import static org.apache.flink.table.types.logical.LogicalTypeFamily.CHARACTER_S
 import static org.apache.flink.table.types.logical.LogicalTypeFamily.CONSTRUCTED;
 import static org.apache.flink.table.types.logical.LogicalTypeFamily.DATETIME;
 import static org.apache.flink.table.types.logical.LogicalTypeFamily.EXACT_NUMERIC;
+import static org.apache.flink.table.types.logical.LogicalTypeFamily.INTEGER_NUMERIC;
 import static org.apache.flink.table.types.logical.LogicalTypeFamily.INTERVAL;
 import static org.apache.flink.table.types.logical.LogicalTypeFamily.NUMERIC;
 import static org.apache.flink.table.types.logical.LogicalTypeFamily.PREDEFINED;
@@ -122,18 +123,23 @@ public final class LogicalTypeCasts {
 
         castTo(VARCHAR).implicitFromFamily(CHARACTER_STRING).explicitFromFamily(PREDEFINED).build();
 
-        castTo(BOOLEAN).implicitFrom(BOOLEAN).explicitFromFamily(CHARACTER_STRING, NUMERIC).build();
+        castTo(BOOLEAN)
+                .implicitFrom(BOOLEAN)
+                .explicitFromFamily(CHARACTER_STRING, INTEGER_NUMERIC)
+                .build();
 
         castTo(BINARY)
                 .implicitFrom(BINARY)
                 .explicitFromFamily(CHARACTER_STRING)
                 .explicitFrom(VARBINARY)
+                .explicitFrom(RAW)
                 .build();
 
         castTo(VARBINARY)
                 .implicitFromFamily(BINARY_STRING)
                 .explicitFromFamily(CHARACTER_STRING)
                 .explicitFrom(BINARY)
+                .explicitFrom(RAW)
                 .build();
 
         castTo(DECIMAL)
@@ -319,7 +325,8 @@ public final class LogicalTypeCasts {
         } else if (sourceRoot == STRUCTURED_TYPE || targetRoot == STRUCTURED_TYPE) {
             return supportsStructuredCasting(
                     sourceType, targetType, (s, t) -> supportsCasting(s, t, allowExplicit));
-        } else if (sourceRoot == RAW || targetRoot == RAW) {
+        } else if (sourceRoot == RAW && !hasFamily(targetType, BINARY_STRING)
+                || targetRoot == RAW) {
             // the two raw types are not equal (from initial invariant), casting is not possible
             return false;
         } else if (sourceRoot == SYMBOL || targetRoot == SYMBOL) {
