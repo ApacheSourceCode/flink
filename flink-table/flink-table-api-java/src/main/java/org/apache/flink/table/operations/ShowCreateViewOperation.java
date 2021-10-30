@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,17 +16,25 @@
  * limitations under the License.
  */
 
-package org.apache.flink.streaming.runtime.tasks;
+package org.apache.flink.table.operations;
 
-/**
- * An interface marking a task as capable of handling exceptions thrown by different threads, other
- * than the one executing the task itself.
- */
-public interface AsyncExceptionHandler {
+import org.apache.flink.table.catalog.ObjectIdentifier;
 
-    /**
-     * Handles an exception thrown by another thread (e.g. a TriggerTask), other than the one
-     * executing the main task.
-     */
-    void handleAsyncException(String message, Throwable exception);
+/** Operation to describe a SHOW CREATE VIEW statement. */
+public class ShowCreateViewOperation implements ShowOperation {
+
+    private final ObjectIdentifier viewIdentifier;
+
+    public ShowCreateViewOperation(ObjectIdentifier sqlIdentifier) {
+        this.viewIdentifier = sqlIdentifier;
+    }
+
+    public ObjectIdentifier getViewIdentifier() {
+        return viewIdentifier;
+    }
+
+    @Override
+    public String asSummaryString() {
+        return String.format("SHOW CREATE VIEW %s", viewIdentifier.asSummaryString());
+    }
 }
