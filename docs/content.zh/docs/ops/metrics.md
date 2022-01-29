@@ -884,8 +884,8 @@ Metrics related to data exchange between task executors using netty network comm
   </thead>
   <tbody>
     <tr>
-      <th rowspan="6"><strong>TaskManager</strong></th>
-      <td rowspan="6">Status.Shuffle.Netty</td>
+      <th rowspan="7"><strong>TaskManager</strong></th>
+      <td rowspan="7">Status.Shuffle.Netty</td>
       <td>AvailableMemorySegments</td>
       <td>The number of unused memory segments.</td>
       <td>Gauge</td>
@@ -913,6 +913,11 @@ Metrics related to data exchange between task executors using netty network comm
     <tr>
       <td>TotalMemory</td>
       <td>The amount of allocated memory in bytes.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>RequestedMemoryUsage</td>
+      <td>Experimental: The usage of the network memory. Shows (as percentage) the total amount of requested memory from all of the subtasks. It can exceed 100% as not all requested memory is required for subtask to make progress. However if usage exceeds 100% throughput can suffer greatly and please consider increasing available network memory, or decreasing configured size of network buffer pools.</td>
       <td>Gauge</td>
     </tr>
     <tr>
@@ -1211,6 +1216,59 @@ Note that for failed checkpoints, metrics are updated on a best efforts basis an
 
 ### RocksDB
 Certain RocksDB native metrics are available but disabled by default, you can find full documentation [here]({{< ref "docs/deployment/config" >}}#rocksdb-native-metrics)
+
+### State Changelog
+
+Note that the metrics are only available via reporters.
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 18%">Scope</th>
+      <th class="text-left" style="width: 26%">Metrics</th>
+      <th class="text-left" style="width: 48%">Description</th>
+      <th class="text-left" style="width: 8%">Type</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="20"><strong>Job (only available on TaskManager)</strong></th>
+      <td>numberOfUploadRequests</td>
+      <td>Total number of upload requests made</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>numberOfUploadFailures</td>
+      <td>Total number of failed upload requests (request may be retried after the failure)</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>attemptsPerUpload</td>
+      <td>The number of attempts per upload</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>uploadBatchSizes</td>
+      <td>The number of upload tasks (coming from one or more writers, i.e. backends/tasks) that were grouped together and form a single upload resulting in a single file</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>uploadLatenciesNanos</td>
+      <td>The latency distributions of uploads</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>uploadSizes</td>
+      <td>The size distributions of uploads</td>
+      <td>Histogram</td>
+    </tr>
+    <tr>
+      <td>uploadQueueSize</td>
+      <td>Current size of upload queue. Queue items can be packed together and form a single upload.</td>
+      <td>Meter</td>
+    </tr>
+  </tbody>
+</table>
 
 ### IO
 <table class="table table-bordered">

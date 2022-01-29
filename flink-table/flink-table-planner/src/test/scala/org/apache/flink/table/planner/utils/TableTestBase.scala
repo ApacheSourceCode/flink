@@ -702,6 +702,22 @@ abstract class TableTestUtilBase(test: TableTestBase, isStreamingMode: Boolean) 
   }
 
   /**
+   * Verify the explain result for the given sql clause which represents a [[ModifyOperation]].
+   */
+  def verifyExplainSql(sql: String): Unit = {
+    val operations = getTableEnv.asInstanceOf[TableEnvironmentImpl].getParser.parse(sql)
+    val relNode = TableTestUtil.toRelNode(
+      getTableEnv,
+      operations.get(0).asInstanceOf[ModifyOperation])
+    assertPlanEquals(
+      Array(relNode),
+      Array.empty[ExplainDetail],
+      withRowType = false,
+      Array(PlanKind.AST, PlanKind.OPT_REL),
+      () => assertEqualsOrExpand("sql", sql))
+  }
+
+  /**
    * Verify the explain result for the given [[Table]]. See more about [[Table#explain()]].
    */
   def verifyExplain(table: Table): Unit = {
@@ -759,6 +775,8 @@ abstract class TableTestUtilBase(test: TableTestBase, isStreamingMode: Boolean) 
     doVerifyExplain(stmtSet.explain(extraDetails: _*), extraDetails: _*)
   }
 
+  final val PLAN_TEST_FORCE_OVERWRITE = "PLAN_TEST_FORCE_OVERWRITE"
+
   /**
    * Verify the json plan for the given insert statement.
    */
@@ -772,26 +790,23 @@ abstract class TableTestUtilBase(test: TableTestBase, isStreamingMode: Boolean) 
     val testClassDirPath = clazz.getName.replaceAll("\\.", "/") + "_jsonplan"
     val testMethodFileName = test.testName.getMethodName + ".out"
     val resourceTestFilePath = s"/$testClassDirPath/$testMethodFileName"
-    val resourceUrl = clazz.getResource(resourceTestFilePath)
-    val file = if (resourceUrl != null) {
-      new File(resourceUrl.toURI)
+    val plannerDirPath = clazz.getResource("/").getFile.replace("/target/test-classes/", "")
+    val file = new File(s"$plannerDirPath/src/test/resources$resourceTestFilePath")
+    val path = file.toPath
+    if (!file.exists() || "true".equalsIgnoreCase(System.getenv(PLAN_TEST_FORCE_OVERWRITE))) {
+      Files.deleteIfExists(path)
+      file.getParentFile.mkdirs()
+      assertTrue(file.createNewFile())
+      val prettyJson = TableTestUtil.getPrettyJson(jsonPlanWithoutFlinkVersion)
+      Files.write(path, prettyJson.getBytes)
+      fail(s"$testMethodFileName regenerated.")
     } else {
-      val plannerDirPath = clazz.getResource("/").getFile.replace("/target/test-classes/", "")
-      new File(s"$plannerDirPath/src/test/resources$resourceTestFilePath")
-    }
-    if (file.exists()) {
-      val expected = TableTestUtil.readFromResource(resourceTestFilePath)
+      val expected = String.join("\n", Files.readAllLines(path))
       assertEquals(
         TableTestUtil.replaceExecNodeId(
           TableTestUtil.getFormattedJson(expected)),
         TableTestUtil.replaceExecNodeId(
           TableTestUtil.getFormattedJson(jsonPlanWithoutFlinkVersion)))
-    } else {
-      file.getParentFile.mkdirs()
-      assertTrue(file.createNewFile())
-      val prettyJson = TableTestUtil.getPrettyJson(jsonPlanWithoutFlinkVersion)
-      Files.write(Paths.get(file.toURI), prettyJson.getBytes)
-      fail(s"$testMethodFileName does not exist.")
     }
   }
 
@@ -1623,13 +1638,23 @@ object TableTestUtil {
   val BATCH_SETTING: EnvironmentSettings = EnvironmentSettings.newInstance().inBatchMode().build()
 
   /**
-   * Converts operation tree in the given table to a RelNode tree.
+   * Convert operation tree in the given table to a RelNode tree.
    */
   def toRelNode(table: Table): RelNode = {
     table.asInstanceOf[TableImpl]
       .getTableEnvironment.asInstanceOf[TableEnvironmentImpl]
       .getPlanner.asInstanceOf[PlannerBase]
       .getRelBuilder.queryOperation(table.getQueryOperation).build()
+  }
+
+  /**
+   * Convert modify operation to a RelNode tree.
+   */
+  def toRelNode(
+      tEnv: TableEnvironment,
+      modifyOperation: ModifyOperation): RelNode = {
+    val planner = tEnv.asInstanceOf[TableEnvironmentImpl].getPlanner.asInstanceOf[PlannerBase]
+    planner.translateToRel(modifyOperation)
   }
 
   def createTemporaryView[T](

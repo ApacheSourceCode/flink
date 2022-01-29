@@ -116,7 +116,7 @@ public class LogicalTypeJsonDeserializer extends StdDeserializer<LogicalType> {
         if (logicalTypeNode.isTextual()) {
             return deserializeWithCompactSerialization(logicalTypeNode.asText(), serdeContext);
         } else {
-            return deserializeWithGenericSerialization(logicalTypeNode, serdeContext);
+            return deserializeWithExtendedSerialization(logicalTypeNode, serdeContext);
         }
     }
 
@@ -127,7 +127,7 @@ public class LogicalTypeJsonDeserializer extends StdDeserializer<LogicalType> {
         return dataTypeFactory.createLogicalType(serializableString);
     }
 
-    private static LogicalType deserializeWithGenericSerialization(
+    private static LogicalType deserializeWithExtendedSerialization(
             JsonNode logicalTypeNode, SerdeContext serdeContext) {
         final LogicalType logicalType = deserializeFromRoot(logicalTypeNode, serdeContext);
         if (logicalTypeNode.has(FIELD_NAME_NULLABLE)) {
@@ -252,7 +252,7 @@ public class LogicalTypeJsonDeserializer extends StdDeserializer<LogicalType> {
             JsonNode logicalTypeNode, SerdeContext serdeContext) {
         final ObjectIdentifier identifier =
                 ObjectIdentifierJsonDeserializer.deserialize(
-                        logicalTypeNode.get(FIELD_NAME_OBJECT_IDENTIFIER));
+                        logicalTypeNode.get(FIELD_NAME_OBJECT_IDENTIFIER).asText(), serdeContext);
         final CatalogPlanRestore restoreStrategy =
                 serdeContext
                         .getConfiguration()
@@ -294,7 +294,7 @@ public class LogicalTypeJsonDeserializer extends StdDeserializer<LogicalType> {
         // for catalog structured types
         final ObjectIdentifier identifier =
                 ObjectIdentifierJsonDeserializer.deserialize(
-                        logicalTypeNode.get(FIELD_NAME_OBJECT_IDENTIFIER));
+                        logicalTypeNode.get(FIELD_NAME_OBJECT_IDENTIFIER).asText(), serdeContext);
         final CatalogPlanRestore restoreStrategy =
                 serdeContext
                         .getConfiguration()
@@ -327,7 +327,8 @@ public class LogicalTypeJsonDeserializer extends StdDeserializer<LogicalType> {
         if (logicalTypeNode.has(FIELD_NAME_OBJECT_IDENTIFIER)) {
             identifier =
                     ObjectIdentifierJsonDeserializer.deserialize(
-                            logicalTypeNode.get(FIELD_NAME_OBJECT_IDENTIFIER));
+                            logicalTypeNode.get(FIELD_NAME_OBJECT_IDENTIFIER).asText(),
+                            serdeContext);
         } else {
             identifier = null;
         }
