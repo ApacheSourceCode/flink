@@ -22,6 +22,7 @@ import org.apache.flink.api.connector.sink.Sink;
 import org.apache.flink.connector.aws.util.AWSAsyncSinkUtil;
 import org.apache.flink.connector.aws.util.AWSGeneralUtil;
 import org.apache.flink.connector.base.sink.writer.AsyncSinkWriter;
+import org.apache.flink.connector.base.sink.writer.BufferedRequestState;
 import org.apache.flink.connector.base.sink.writer.ElementConverter;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
@@ -56,7 +57,22 @@ import java.util.function.Consumer;
  */
 @Internal
 class KinesisFirehoseSinkWriter<InputT> extends AsyncSinkWriter<InputT, Record> {
+
     private static final Logger LOG = LoggerFactory.getLogger(KinesisFirehoseSinkWriter.class);
+
+    private static SdkAsyncHttpClient createHttpClient(Properties firehoseClientProperties) {
+        return AWSGeneralUtil.createAsyncHttpClient(firehoseClientProperties);
+    }
+
+    private static FirehoseAsyncClient createFirehoseClient(
+            Properties firehoseClientProperties, SdkAsyncHttpClient httpClient) {
+        return AWSAsyncSinkUtil.createAwsAsyncClient(
+                firehoseClientProperties,
+                httpClient,
+                FirehoseAsyncClient.builder(),
+                KinesisFirehoseConfigConstants.BASE_FIREHOSE_USER_AGENT_PREFIX_FORMAT,
+                KinesisFirehoseConfigConstants.FIREHOSE_CLIENT_USER_AGENT_PREFIX);
+    }
 
     /* A counter for the total number of records that have encountered an error during put */
     private final Counter numRecordsOutErrorsCounter;
@@ -67,8 +83,11 @@ class KinesisFirehoseSinkWriter<InputT> extends AsyncSinkWriter<InputT, Record> 
     /* The sink writer metric group */
     private final SinkWriterMetricGroup metrics;
 
-    /* The asynchronous Firehose client - construction is by firehoseClientProperties */
-    private final FirehoseAsyncClient client;
+    /* The asynchronous http client */
+    private final SdkAsyncHttpClient httpClient;
+
+    /* The asynchronous Firehose client */
+    private final FirehoseAsyncClient firehoseClient;
 
     /* Flag to whether fatally fail any time we encounter an exception when persisting records */
     private final boolean failOnError;
@@ -85,6 +104,34 @@ class KinesisFirehoseSinkWriter<InputT> extends AsyncSinkWriter<InputT, Record> 
             boolean failOnError,
             String deliveryStreamName,
             Properties firehoseClientProperties) {
+        this(
+                elementConverter,
+                context,
+                maxBatchSize,
+                maxInFlightRequests,
+                maxBufferedRequests,
+                maxBatchSizeInBytes,
+                maxTimeInBufferMS,
+                maxRecordSizeInBytes,
+                failOnError,
+                deliveryStreamName,
+                firehoseClientProperties,
+                Collections.emptyList());
+    }
+
+    KinesisFirehoseSinkWriter(
+            ElementConverter<InputT, Record> elementConverter,
+            Sink.InitContext context,
+            int maxBatchSize,
+            int maxInFlightRequests,
+            int maxBufferedRequests,
+            long maxBatchSizeInBytes,
+            long maxTimeInBufferMS,
+            long maxRecordSizeInBytes,
+            boolean failOnError,
+            String deliveryStreamName,
+            Properties firehoseClientProperties,
+            List<BufferedRequestState<Record>> initialStates) {
         super(
                 elementConverter,
                 context,
@@ -93,24 +140,14 @@ class KinesisFirehoseSinkWriter<InputT> extends AsyncSinkWriter<InputT, Record> 
                 maxBufferedRequests,
                 maxBatchSizeInBytes,
                 maxTimeInBufferMS,
-                maxRecordSizeInBytes);
+                maxRecordSizeInBytes,
+                initialStates);
         this.failOnError = failOnError;
         this.deliveryStreamName = deliveryStreamName;
         this.metrics = context.metricGroup();
         this.numRecordsOutErrorsCounter = metrics.getNumRecordsOutErrorsCounter();
-        this.client = buildClient(firehoseClientProperties);
-    }
-
-    private FirehoseAsyncClient buildClient(Properties firehoseClientProperties) {
-        final SdkAsyncHttpClient httpClient =
-                AWSGeneralUtil.createAsyncHttpClient(firehoseClientProperties);
-
-        return AWSAsyncSinkUtil.createAwsAsyncClient(
-                firehoseClientProperties,
-                httpClient,
-                FirehoseAsyncClient.builder(),
-                KinesisFirehoseConfigConstants.BASE_FIREHOSE_USER_AGENT_PREFIX_FORMAT,
-                KinesisFirehoseConfigConstants.FIREHOSE_CLIENT_USER_AGENT_PREFIX);
+        this.httpClient = createHttpClient(firehoseClientProperties);
+        this.firehoseClient = createFirehoseClient(firehoseClientProperties, httpClient);
     }
 
     @Override
@@ -125,7 +162,8 @@ class KinesisFirehoseSinkWriter<InputT> extends AsyncSinkWriter<InputT, Record> 
 
         LOG.trace("Request to submit {} entries to KDF using KDF Sink.", requestEntries.size());
 
-        CompletableFuture<PutRecordBatchResponse> future = client.putRecordBatch(batchRequest);
+        CompletableFuture<PutRecordBatchResponse> future =
+                firehoseClient.putRecordBatch(batchRequest);
 
         future.whenComplete(
                 (response, err) -> {
@@ -142,6 +180,11 @@ class KinesisFirehoseSinkWriter<InputT> extends AsyncSinkWriter<InputT, Record> 
     @Override
     protected long getSizeInBytes(Record requestEntry) {
         return requestEntry.data().asByteArrayUnsafe().length;
+    }
+
+    @Override
+    public void close() {
+        AWSGeneralUtil.closeResources(httpClient, firehoseClient);
     }
 
     private void handleFullyFailedRequest(
