@@ -73,8 +73,8 @@ public interface ChangelogStateBackendHandle extends KeyedStateHandle {
                     materialized,
                     nonMaterialized,
                     keyGroupRange,
-                    persistedSizeOfThisCheckpoint,
                     materializationID,
+                    persistedSizeOfThisCheckpoint,
                     StateHandleID.randomStateHandleId());
         }
 
@@ -236,6 +236,30 @@ public interface ChangelogStateBackendHandle extends KeyedStateHandle {
             @Override
             public Optional<byte[]> asBytesIfInMemory() {
                 throw new UnsupportedOperationException("Should not call here.");
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) {
+                    return true;
+                }
+                if (o == null || getClass() != o.getClass()) {
+                    return false;
+                }
+                StreamStateHandleWrapper that = (StreamStateHandleWrapper) o;
+                return Objects.equals(
+                        keyedStateHandle.getStateHandleId(),
+                        that.keyedStateHandle.getStateHandleId());
+            }
+
+            @Override
+            public int hashCode() {
+                return Objects.hash(keyedStateHandle.getStateHandleId());
+            }
+
+            @Override
+            public String toString() {
+                return "Wrapped{" + keyedStateHandle + '}';
             }
         }
     }
