@@ -16,28 +16,20 @@
  * limitations under the License.
  */
 
-package org.apache.flink.runtime.blob;
+package org.apache.flink.runtime.state.changelog;
 
-import org.apache.flink.api.common.JobID;
-
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
+import org.apache.flink.annotation.Internal;
 
 /**
- * Testing implementation of {@link PermanentBlobService} which always fails the {@link
- * #getFile(JobID, PermanentBlobKey)} call.
+ * A storage view for changelog. Could produce {@link StateChangelogHandleReader} for read. Please
+ * use {@link StateChangelogStorageLoader} to obtain an instance.
  */
-public enum FailingPermanentBlobService implements PermanentBlobService {
-    INSTANCE;
+@Internal
+public interface StateChangelogStorageView<Handle extends ChangelogStateHandle>
+        extends AutoCloseable {
+
+    StateChangelogHandleReader<Handle> createReader();
 
     @Override
-    public File getFile(JobID jobId, PermanentBlobKey key) throws IOException {
-        throw new FileNotFoundException(
-                String.format(
-                        "Could not find file for blob key %s belonging to job %s.", key, jobId));
-    }
-
-    @Override
-    public void close() {}
+    default void close() throws Exception {}
 }

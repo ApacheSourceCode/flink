@@ -16,15 +16,7 @@
  * limitations under the License.
  */
 
-package org.apache.flink.runtime.rest.handler;
+package org.apache.flink.table.catalog.hive.client;
 
-/** Marker interface for web handlers which can describe their paths. */
-public interface WebHandler {
-
-    /**
-     * Returns an array of REST URL's under which this handler can be registered.
-     *
-     * @return array containing REST URL's under which this handler can be registered.
-     */
-    String[] getPaths();
-}
+/** Shim for Hive version 3.1.3. */
+public class HiveShimV313 extends HiveShimV312 {}
