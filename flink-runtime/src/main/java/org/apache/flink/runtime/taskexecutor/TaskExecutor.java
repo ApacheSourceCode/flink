@@ -54,7 +54,6 @@ import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.instance.HardwareDescription;
 import org.apache.flink.runtime.instance.InstanceID;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionConsumableNotifier;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.TaskExecutorPartitionInfo;
 import org.apache.flink.runtime.io.network.partition.TaskExecutorPartitionTracker;
@@ -113,7 +112,6 @@ import org.apache.flink.runtime.taskexecutor.rpc.RpcGlobalAggregateManager;
 import org.apache.flink.runtime.taskexecutor.rpc.RpcInputSplitProvider;
 import org.apache.flink.runtime.taskexecutor.rpc.RpcKvStateRegistryListener;
 import org.apache.flink.runtime.taskexecutor.rpc.RpcPartitionStateChecker;
-import org.apache.flink.runtime.taskexecutor.rpc.RpcResultPartitionConsumableNotifier;
 import org.apache.flink.runtime.taskexecutor.rpc.RpcTaskOperatorEventGateway;
 import org.apache.flink.runtime.taskexecutor.slot.SlotActions;
 import org.apache.flink.runtime.taskexecutor.slot.SlotAllocationSnapshot;
@@ -548,23 +546,29 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
 
     @Override
     public CompletableFuture<TaskThreadInfoResponse> requestThreadInfoSamples(
-            final ExecutionAttemptID taskExecutionAttemptId,
+            final Collection<ExecutionAttemptID> taskExecutionAttemptIds,
             final ThreadInfoSamplesRequest requestParams,
             final Time timeout) {
 
-        final Task task = taskSlotTable.getTask(taskExecutionAttemptId);
-        if (task == null) {
-            return FutureUtils.completedExceptionally(
-                    new IllegalStateException(
-                            String.format(
-                                    "Cannot sample task %s. "
-                                            + "Task is not known to the task manager.",
-                                    taskExecutionAttemptId)));
+        final Collection<Task> tasks = new ArrayList<>();
+        for (ExecutionAttemptID executionAttemptId : taskExecutionAttemptIds) {
+            final Task task = taskSlotTable.getTask(executionAttemptId);
+            if (task == null) {
+                log.warn(
+                        String.format(
+                                "Cannot sample task %s. "
+                                        + "Task is not known to the task manager.",
+                                executionAttemptId));
+            } else {
+                tasks.add(task);
+            }
         }
 
-        final CompletableFuture<List<ThreadInfoSample>> stackTracesFuture =
-                threadInfoSampleService.requestThreadInfoSamples(
-                        SampleableTaskAdapter.fromTask(task), requestParams);
+        Collection<SampleableTask> sampleableTasks =
+                tasks.stream().map(SampleableTaskAdapter::fromTask).collect(Collectors.toList());
+
+        final CompletableFuture<Collection<ThreadInfoSample>> stackTracesFuture =
+                threadInfoSampleService.requestThreadInfoSamples(sampleableTasks, requestParams);
 
         return stackTracesFuture.thenApply(TaskThreadInfoResponse::new);
     }
@@ -657,12 +661,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             // note that a pre-existing job group can NOT be closed concurrently - this is done by
             // the same TM thread in removeJobMetricsGroup
             TaskMetricGroup taskMetricGroup =
-                    jobGroup.addTask(
-                            taskInformation.getJobVertexId(),
-                            tdd.getExecutionAttemptId(),
-                            taskInformation.getTaskName(),
-                            tdd.getSubtaskIndex(),
-                            tdd.getAttemptNumber());
+                    jobGroup.addTask(tdd.getExecutionAttemptId(), taskInformation.getTaskName());
 
             InputSplitProvider inputSplitProvider =
                     new RpcInputSplitProvider(
@@ -684,8 +683,6 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
 
             LibraryCacheManager.ClassLoaderHandle classLoaderHandle =
                     jobManagerConnection.getClassLoaderHandle();
-            ResultPartitionConsumableNotifier resultPartitionConsumableNotifier =
-                    jobManagerConnection.getResultPartitionConsumableNotifier();
             PartitionProducerStateChecker partitionStateChecker =
                     jobManagerConnection.getPartitionStateChecker();
 
@@ -730,8 +727,6 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                             taskInformation,
                             tdd.getExecutionAttemptId(),
                             tdd.getAllocationId(),
-                            tdd.getSubtaskIndex(),
-                            tdd.getAttemptNumber(),
                             tdd.getProducedPartitions(),
                             tdd.getInputGates(),
                             memoryManager,
@@ -751,7 +746,6 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                             fileCache,
                             taskManagerConfiguration,
                             taskMetricGroup,
-                            resultPartitionConsumableNotifier,
                             partitionStateChecker,
                             getRpcService().getScheduledExecutor());
 
@@ -1729,12 +1723,6 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
         CheckpointResponder checkpointResponder = new RpcCheckpointResponder(jobMasterGateway);
         GlobalAggregateManager aggregateManager = new RpcGlobalAggregateManager(jobMasterGateway);
 
-        ResultPartitionConsumableNotifier resultPartitionConsumableNotifier =
-                new RpcResultPartitionConsumableNotifier(
-                        jobMasterGateway,
-                        getRpcService().getScheduledExecutor(),
-                        taskManagerConfiguration.getRpcTimeout());
-
         PartitionProducerStateChecker partitionStateChecker =
                 new RpcPartitionStateChecker(jobMasterGateway);
 
@@ -1746,7 +1734,6 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                 taskManagerActions,
                 checkpointResponder,
                 aggregateManager,
-                resultPartitionConsumableNotifier,
                 partitionStateChecker);
     }
 

@@ -269,6 +269,7 @@ try:
                 'pyflink.table',
                 'pyflink.util',
                 'pyflink.datastream',
+                'pyflink.datastream.connectors',
                 'pyflink.common',
                 'pyflink.fn_execution',
                 'pyflink.fn_execution.beam',
@@ -280,7 +281,8 @@ try:
                 'pyflink.conf',
                 'pyflink.log',
                 'pyflink.examples',
-                'pyflink.bin']
+                'pyflink.bin',
+                'pyflink.testing']
 
     PACKAGE_DIR = {
         'pyflink.conf': TEMP_PATH + '/conf',

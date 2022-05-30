@@ -215,10 +215,8 @@ public class TaskExecutorPartitionLifecycleTest extends TestLogger {
             TaskSubmissionTestEnvironment.registerJobMasterConnection(
                     jobTable,
                     jobId,
-                    rpc,
                     jobMasterGateway,
                     new NoOpTaskManagerActions(),
-                    timeout,
                     taskExecutor.getMainThreadExecutableForTesting());
 
             final TaskExecutorGateway taskExecutorGateway =
@@ -422,9 +420,7 @@ public class TaskExecutorPartitionLifecycleTest extends TestLogger {
                         new SerializedValue<>(new ExecutionConfig()),
                         "Sender",
                         1,
-                        0,
                         1,
-                        0,
                         new Configuration(),
                         new Configuration(),
                         TestingInvokable.class.getName(),
