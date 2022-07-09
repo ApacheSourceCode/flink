@@ -1016,6 +1016,20 @@ class Expression(Generic[T]):
         else:
             return _ternary_op("substring")(self, begin_index, length)
 
+    def substr(self,
+               begin_index: Union[int, 'Expression[int]'],
+               length: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
+        """
+        Creates a substring of the given string at given index for a given length.
+
+        :param begin_index: first character of the substring (starting at 1, inclusive)
+        :param length: number of characters of the substring
+        """
+        if length is None:
+            return _binary_op("substr")(self, begin_index)
+        else:
+            return _ternary_op("substr")(self, begin_index, length)
+
     def trim_leading(self, character: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
         """
         Removes leading space characters from the given string if character is None.
@@ -1150,6 +1164,13 @@ class Expression(Generic[T]):
             return Expression(getattr(self._j_expr, "overlay")(
                 j_expr_new_string, j_expr_starting, j_expr_length))
 
+    def regexp(self, regex: Union[str, 'Expression[str]']) -> 'Expression[str]':
+        """
+        Returns True if any (possibly empty) substring matches the regular expression,
+        otherwise False. Returns None if any of arguments is None.
+        """
+        return _binary_op("regexp")(self, regex)
+
     def regexp_replace(self,
                        regex: Union[str, 'Expression[str]'],
                        replacement: Union[str, 'Expression[str]']) -> 'Expression[str]':
@@ -1159,10 +1180,9 @@ class Expression(Generic[T]):
         """
         return _ternary_op("regexpReplace")(self, regex, replacement)
 
-    def regexp_extract(
-            self,
-            regex: Union[str, 'Expression[str]'],
-            extract_index: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
+    def regexp_extract(self,
+                       regex: Union[str, 'Expression[str]'],
+                       extract_index: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
         """
         Returns a string extracted with a specified regular expression and a regex match
         group index.
@@ -1211,6 +1231,45 @@ class Expression(Generic[T]):
         Encodes the string into a BINARY using the provided character set.
         """
         return _binary_op("encode")(self, charset)
+
+    def left(self, length: Union[int, 'Expression[int]']) -> 'Expression[str]':
+        """
+        Returns the leftmost integer characters from the input string.
+        """
+        return _binary_op("left")(self, length)
+
+    def right(self, length: Union[int, 'Expression[int]']) -> 'Expression[str]':
+        """
+        Returns the rightmost integer characters from the input string.
+        """
+        return _binary_op("right")(self, length)
+
+    def instr(self, s: Union[str, 'Expression[str]']) -> 'Expression[int]':
+        """
+        Returns the position of the first occurrence in the input string.
+        """
+        return _binary_op("instr")(self, s)
+
+    def locate(self, s: Union[str, 'Expression[str]'],
+               pos: Union[int, 'Expression[int]'] = None) -> 'Expression[int]':
+        """
+        Returns the position of the first occurrence in the input string after position integer.
+        """
+        if pos is None:
+            return _binary_op("locate")(self, s)
+        else:
+            return _ternary_op("locate")(self, s, pos)
+
+    def parse_url(self, part_to_extract: Union[str, 'Expression[str]'],
+                  key: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
+        """
+        Parse url and return various parameter of the URL.
+        If accept any null arguments, return null.
+        """
+        if key is None:
+            return _binary_op("parseUrl")(self, part_to_extract)
+        else:
+            return _ternary_op("parseUrl")(self, part_to_extract, key)
 
     @property
     def ltrim(self) -> 'Expression[str]':

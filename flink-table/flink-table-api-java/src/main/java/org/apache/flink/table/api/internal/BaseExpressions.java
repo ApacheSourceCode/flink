@@ -92,6 +92,7 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IF;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IF_NULL;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IN;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.INIT_CAP;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.INSTR;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IS_FALSE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IS_JSON;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IS_NOT_FALSE;
@@ -103,10 +104,12 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_E
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_QUERY;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_VALUE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LAST_VALUE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LEFT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LESS_THAN;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LIKE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LN;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOCATE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOG;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOG10;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOG2;
@@ -126,15 +129,18 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ORDER_
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ORDER_DESC;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.OVER;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.OVERLAY;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.PARSE_URL;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.PLUS;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.POSITION;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.POWER;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.PROCTIME;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.RADIANS;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REGEXP;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REGEXP_EXTRACT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REGEXP_REPLACE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REPEAT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REPLACE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.RIGHT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ROUND;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ROWTIME;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.RPAD;
@@ -152,6 +158,7 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SINH;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SQRT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.STDDEV_POP;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.STDDEV_SAMP;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SUBSTR;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SUBSTRING;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SUM;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SUM0;
@@ -772,6 +779,31 @@ public abstract class BaseExpressions<InType, OutType> {
                 unresolvedCall(SUBSTRING, toExpr(), objectToExpression(beginIndex)));
     }
 
+    /**
+     * Creates a substring of the given string at given index for a given length.
+     *
+     * @param beginIndex first character of the substring (starting at 1, inclusive)
+     * @param length number of characters of the substring
+     */
+    public OutType substr(InType beginIndex, InType length) {
+        return toApiSpecificExpression(
+                unresolvedCall(
+                        SUBSTR,
+                        toExpr(),
+                        objectToExpression(beginIndex),
+                        objectToExpression(length)));
+    }
+
+    /**
+     * Creates a substring of the given string beginning at the given index to the end.
+     *
+     * @param beginIndex first character of the substring (starting at 1, inclusive)
+     */
+    public OutType substr(InType beginIndex) {
+        return toApiSpecificExpression(
+                unresolvedCall(SUBSTR, toExpr(), objectToExpression(beginIndex)));
+    }
+
     /** Removes leading space characters from the given string. */
     public OutType trimLeading() {
         return toApiSpecificExpression(
@@ -986,6 +1018,14 @@ public abstract class BaseExpressions<InType, OutType> {
     }
 
     /**
+     * Returns TRUE if any (possibly empty) substring matches the Java regular expression, otherwise
+     * FALSE. Returns NULL if any of arguments is NULL.
+     */
+    public OutType regexp(InType regex) {
+        return toApiSpecificExpression(unresolvedCall(REGEXP, toExpr(), objectToExpression(regex)));
+    }
+
+    /**
      * Returns a string with all substrings that match the regular expression consecutively being
      * replaced.
      */
@@ -1046,6 +1086,52 @@ public abstract class BaseExpressions<InType, OutType> {
     public OutType encode(InType charset) {
         return toApiSpecificExpression(
                 unresolvedCall(ENCODE, toExpr(), objectToExpression(charset)));
+    }
+
+    /** Returns the leftmost integer characters from the input string. */
+    public OutType left(InType len) {
+        return toApiSpecificExpression(unresolvedCall(LEFT, toExpr(), objectToExpression(len)));
+    }
+
+    /** Returns the rightmost integer characters from the input string. */
+    public OutType right(InType len) {
+        return toApiSpecificExpression(unresolvedCall(RIGHT, toExpr(), objectToExpression(len)));
+    }
+
+    /** Returns the position of the first occurrence of the input string. */
+    public OutType instr(InType str) {
+        return toApiSpecificExpression(unresolvedCall(INSTR, toExpr(), objectToExpression(str)));
+    }
+
+    /** Returns the position of the first occurrence in the input string. */
+    public OutType locate(InType str) {
+        return toApiSpecificExpression(unresolvedCall(LOCATE, toExpr(), objectToExpression(str)));
+    }
+
+    /** Returns the position of the first occurrence in the input string after position integer. */
+    public OutType locate(InType str, InType pos) {
+        return toApiSpecificExpression(
+                unresolvedCall(LOCATE, toExpr(), objectToExpression(str), objectToExpression(pos)));
+    }
+
+    /**
+     * Parse url and return various parameter of the URL. If accept any null arguments, return null.
+     */
+    public OutType parseUrl(InType partToExtract) {
+        return toApiSpecificExpression(
+                unresolvedCall(PARSE_URL, toExpr(), objectToExpression(partToExtract)));
+    }
+
+    /**
+     * Parse url and return various parameter of the URL. If accept any null arguments, return null.
+     */
+    public OutType parseUrl(InType partToExtract, InType key) {
+        return toApiSpecificExpression(
+                unresolvedCall(
+                        PARSE_URL,
+                        toExpr(),
+                        objectToExpression(partToExtract),
+                        objectToExpression(key)));
     }
 
     /** Returns a string that removes the left whitespaces from the given string. */
