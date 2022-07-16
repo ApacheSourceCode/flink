@@ -18,6 +18,7 @@
 
 package org.apache.flink.table.gateway.service;
 
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.testutils.CommonTestUtils;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.catalog.Column;
@@ -34,7 +35,6 @@ import org.apache.flink.table.gateway.api.session.SessionEnvironment;
 import org.apache.flink.table.gateway.api.session.SessionHandle;
 import org.apache.flink.table.gateway.api.utils.MockedEndpointVersion;
 import org.apache.flink.table.gateway.api.utils.SqlGatewayException;
-import org.apache.flink.table.gateway.service.operation.Operation;
 import org.apache.flink.table.gateway.service.operation.OperationManager;
 import org.apache.flink.table.gateway.service.session.SessionManager;
 import org.apache.flink.table.gateway.service.utils.IgnoreExceptionHandler;
@@ -54,20 +54,25 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
 import static org.apache.flink.core.testutils.FlinkAssertions.assertThatChainOfCauses;
+import static org.apache.flink.table.gateway.api.results.ResultSet.ResultType.PAYLOAD;
 import static org.apache.flink.types.RowKind.DELETE;
 import static org.apache.flink.types.RowKind.INSERT;
 import static org.apache.flink.types.RowKind.UPDATE_AFTER;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
+import static org.hamcrest.CoreMatchers.hasItem;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -247,6 +252,34 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
         assertEquals(0, sessionManager.getOperationCount(sessionHandle));
     }
 
+    @Test
+    public void testExecuteSqlWithConfig() {
+        SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
+        String key = "username";
+        String value = "Flink";
+        OperationHandle operationHandle =
+                service.executeStatement(
+                        sessionHandle,
+                        "SET",
+                        -1,
+                        Configuration.fromMap(Collections.singletonMap(key, value)));
+
+        Long token = 0L;
+        List<RowData> settings = new ArrayList<>();
+        while (token != null) {
+            ResultSet result =
+                    service.fetchResults(sessionHandle, operationHandle, token, Integer.MAX_VALUE);
+            settings.addAll(result.getData());
+            token = result.getNextToken();
+        }
+
+        assertThat(
+                settings,
+                hasItem(
+                        GenericRowData.of(
+                                StringData.fromString(key), StringData.fromString(value))));
+    }
+
     // --------------------------------------------------------------------------------------------
     // Concurrent tests
     // --------------------------------------------------------------------------------------------
@@ -304,7 +337,7 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
     public void testCancelAndCloseOperationInParallel() throws Exception {
         SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
         int operationNum = 200;
-        List<Operation> operations = new ArrayList<>(operationNum);
+        List<OperationManager.Operation> operations = new ArrayList<>(operationNum);
         for (int i = 0; i < operationNum; i++) {
             boolean throwError = i % 2 == 0;
             OperationHandle operationHandle =
@@ -335,15 +368,15 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
                         service.getSession(sessionHandle).getOperationManager().getOperationCount()
                                 == 0,
                 Duration.ofSeconds(10),
-                "All operation should be closed.");
+                "All operations should be closed.");
 
-        for (Operation op : operations) {
+        for (OperationManager.Operation op : operations) {
             assertEquals(OperationStatus.CLOSED, op.getOperationInfo().getStatus());
         }
     }
 
     @Test
-    public void testSubmitOperationAndCloseOperationManagerInParallel() throws Exception {
+    public void testSubmitOperationAndCloseOperationManagerInParallel1() throws Exception {
         SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
         OperationManager manager = service.getSession(sessionHandle).getOperationManager();
         int submitThreadsNum = 100;
@@ -365,12 +398,123 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
         assertEquals(0, manager.getOperationCount());
     }
 
+    @Test
+    public void testSubmitOperationAndCloseOperationManagerInParallel2() throws Exception {
+        int count = 3;
+        CountDownLatch startRunning = new CountDownLatch(1);
+        CountDownLatch terminateRunning = new CountDownLatch(1);
+        SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
+        for (int i = 0; i < count; i++) {
+            threadFactory
+                    .newThread(
+                            () ->
+                                    service.submitOperation(
+                                            sessionHandle,
+                                            OperationType.UNKNOWN,
+                                            () -> {
+                                                startRunning.countDown();
+                                                terminateRunning.await();
+                                                return null;
+                                            }))
+                    .start();
+        }
+        startRunning.await();
+        service.getSession(sessionHandle).getOperationManager().close();
+        terminateRunning.countDown();
+    }
+
+    @Test
+    public void testExecuteOperationInSequence() throws Exception {
+        SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
+        AtomicReference<Integer> v = new AtomicReference<>(0);
+
+        int threadNum = 100;
+        List<OperationHandle> handles = new ArrayList<>();
+
+        for (int i = 0; i < threadNum; i++) {
+            handles.add(
+                    service.submitOperation(
+                            sessionHandle,
+                            OperationType.UNKNOWN,
+                            () -> {
+                                // If execute in parallel, the value of v may be overridden by
+                                // another thread
+                                int origin = v.get();
+                                v.set(origin + 1);
+                                return null;
+                            }));
+        }
+        for (OperationHandle handle : handles) {
+            CommonTestUtils.waitUtil(
+                    () ->
+                            service.getOperationInfo(sessionHandle, handle)
+                                    .getStatus()
+                                    .isTerminalStatus(),
+                    Duration.ofSeconds(10),
+                    "Failed to wait operation terminate");
+        }
+
+        assertEquals(threadNum, v.get());
+    }
+
+    @Test
+    public void testReleaseLockWhenFailedToSubmitOperation() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        int maximumThreads = 500;
+        List<SessionHandle> sessions = new ArrayList<>();
+        List<OperationHandle> operations = new ArrayList<>();
+        for (int i = 0; i < maximumThreads; i++) {
+            SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
+            sessions.add(sessionHandle);
+            operations.add(
+                    service.submitOperation(
+                            sessionHandle,
+                            OperationType.UNKNOWN,
+                            () -> {
+                                latch.await();
+                                return null;
+                            }));
+        }
+        // The queue is full and should reject
+        SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
+        assertThatThrownBy(
+                        () ->
+                                service.submitOperation(
+                                        sessionHandle,
+                                        OperationType.UNKNOWN,
+                                        () -> {
+                                            latch.await();
+                                            return null;
+                                        }))
+                .satisfies(anyCauseMatches(RejectedExecutionException.class));
+        latch.countDown();
+        // Wait the first operation finishes
+        CommonTestUtils.waitUtil(
+                () ->
+                        service.getOperationInfo(sessions.get(0), operations.get(0))
+                                .getStatus()
+                                .isTerminalStatus(),
+                Duration.ofSeconds(10),
+                "Should come to end soon.");
+        // Service is able to submit operation
+        CountDownLatch success = new CountDownLatch(1);
+        service.submitOperation(
+                sessionHandle,
+                OperationType.UNKNOWN,
+                () -> {
+                    success.countDown();
+                    return null;
+                });
+        CommonTestUtils.waitUtil(
+                () -> success.getCount() == 0, Duration.ofSeconds(10), "Should come to end.");
+    }
+
     // --------------------------------------------------------------------------------------------
     // Negative tests
     // --------------------------------------------------------------------------------------------
 
     @Test
-    public void testFetchResultsFromCanceledOperation() throws Exception {
+    public void testFetchResultsFromCanceledOperation() {
         SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
 
         CountDownLatch latch = new CountDownLatch(1);
@@ -433,7 +577,7 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
                         GenericRowData.ofKind(DELETE, 1, null, null),
                         GenericRowData.ofKind(UPDATE_AFTER, 2, null, 101));
         return new ResultSet(
-                ResultSet.ResultType.PAYLOAD,
+                PAYLOAD,
                 null,
                 ResolvedSchema.of(
                         Column.physical("id", DataTypes.BIGINT()),
@@ -474,7 +618,7 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
                                 if (resultSet.getNextToken() != null) {
                                     token = resultSet.getNextToken();
                                 }
-                                if (resultSet.getResultType() == ResultSet.ResultType.PAYLOAD) {
+                                if (resultSet.getResultType() == PAYLOAD) {
                                     actual.addAll(resultSet.getData());
                                 }
                             }
