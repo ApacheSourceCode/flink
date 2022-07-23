@@ -19,9 +19,13 @@
 
 package org.apache.flink.runtime.scheduler.adaptivebatch;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.metrics.Counter;
+import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.runtime.blocklist.BlockedNode;
 import org.apache.flink.runtime.blocklist.BlocklistOperations;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
@@ -30,6 +34,7 @@ import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.Execution;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
+import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
 import org.apache.flink.runtime.executiongraph.SpeculativeExecutionVertex;
 import org.apache.flink.runtime.executiongraph.failover.flip1.FailoverStrategy;
@@ -37,6 +42,7 @@ import org.apache.flink.runtime.executiongraph.failover.flip1.FailureHandlingRes
 import org.apache.flink.runtime.executiongraph.failover.flip1.RestartBackoffTimeStrategy;
 import org.apache.flink.runtime.io.network.partition.PartitionException;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
 import org.apache.flink.runtime.scheduler.ExecutionGraphFactory;
 import org.apache.flink.runtime.scheduler.ExecutionOperations;
@@ -70,6 +76,7 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
@@ -84,6 +91,10 @@ public class SpeculativeScheduler extends AdaptiveBatchScheduler
     private final BlocklistOperations blocklistOperations;
 
     private final SlowTaskDetector slowTaskDetector;
+
+    private long numSlowExecutionVertices;
+
+    private final Counter numEffectiveSpeculativeExecutionsCounter;
 
     public SpeculativeScheduler(
             final Logger log,
@@ -145,16 +156,30 @@ public class SpeculativeScheduler extends AdaptiveBatchScheduler
 
         this.blockSlowNodeDuration =
                 jobMasterConfiguration.get(JobManagerOptions.BLOCK_SLOW_NODE_DURATION);
+        checkArgument(
+                !blockSlowNodeDuration.isNegative(),
+                "The blocking duration should not be negative.");
 
         this.blocklistOperations = checkNotNull(blocklistOperations);
 
         this.slowTaskDetector = new ExecutionTimeBasedSlowTaskDetector(jobMasterConfiguration);
+
+        this.numEffectiveSpeculativeExecutionsCounter = new SimpleCounter();
     }
 
     @Override
     protected void startSchedulingInternal() {
+        registerMetrics(jobManagerJobMetricGroup);
+
         super.startSchedulingInternal();
         slowTaskDetector.start(getExecutionGraph(), this, getMainThreadExecutor());
+    }
+
+    private void registerMetrics(MetricGroup metricGroup) {
+        metricGroup.gauge(MetricNames.NUM_SLOW_EXECUTION_VERTICES, () -> numSlowExecutionVertices);
+        metricGroup.counter(
+                MetricNames.NUM_EFFECTIVE_SPECULATIVE_EXECUTIONS,
+                numEffectiveSpeculativeExecutionsCounter);
     }
 
     @Override
@@ -170,23 +195,46 @@ public class SpeculativeScheduler extends AdaptiveBatchScheduler
 
     @Override
     protected void onTaskFinished(final Execution execution) {
+        if (!isOriginalAttempt(execution)) {
+            numEffectiveSpeculativeExecutionsCounter.inc();
+        }
+
         // cancel all un-terminated executions because the execution vertex has finished
         FutureUtils.assertNoException(cancelPendingExecutions(execution.getVertex().getID()));
 
         super.onTaskFinished(execution);
     }
 
+    private static boolean isOriginalAttempt(final Execution execution) {
+        return ((SpeculativeExecutionVertex) execution.getVertex())
+                .isOriginalAttempt(execution.getAttemptNumber());
+    }
+
     private CompletableFuture<?> cancelPendingExecutions(
             final ExecutionVertexID executionVertexId) {
-        // cancel all the related pending requests to avoid that slots returned by the canceled
-        // vertices are used to fulfill these pending requests
-        // do not cancel the FINISHED execution
-        cancelAllPendingSlotRequestsForVertex(executionVertexId);
-        return FutureUtils.combineAll(
+        final List<Execution> pendingExecutions =
                 getExecutionVertex(executionVertexId).getCurrentExecutions().stream()
-                        .filter(e -> e.getState() != ExecutionState.FINISHED)
-                        .map(this::cancelExecution)
-                        .collect(Collectors.toList()));
+                        .filter(
+                                e ->
+                                        !e.getState().isTerminal()
+                                                && e.getState() != ExecutionState.CANCELING)
+                        .collect(Collectors.toList());
+        if (pendingExecutions.isEmpty()) {
+            return CompletableFuture.completedFuture(null);
+        }
+
+        log.info(
+                "Canceling {} un-finished executions of {} because one of its executions has finished.",
+                pendingExecutions.size(),
+                executionVertexId);
+
+        final CompletableFuture<?> future =
+                FutureUtils.combineAll(
+                        pendingExecutions.stream()
+                                .map(this::cancelExecution)
+                                .collect(Collectors.toList()));
+        cancelAllPendingSlotRequestsForVertex(executionVertexId);
+        return future;
     }
 
     @Override
@@ -253,20 +301,22 @@ public class SpeculativeScheduler extends AdaptiveBatchScheduler
     }
 
     @Override
+    protected void resetForNewExecution(final ExecutionVertexID executionVertexId) {
+        final ExecutionVertex executionVertex = getExecutionVertex(executionVertexId);
+        final Execution execution = executionVertex.getCurrentExecutionAttempt();
+        if (execution.getState() == ExecutionState.FINISHED && !isOriginalAttempt(execution)) {
+            numEffectiveSpeculativeExecutionsCounter.dec();
+        }
+
+        super.resetForNewExecution(executionVertexId);
+    }
+
+    @Override
     public void notifySlowTasks(Map<ExecutionVertexID, Collection<ExecutionAttemptID>> slowTasks) {
+        numSlowExecutionVertices = slowTasks.size();
+
         // add slow nodes to blocklist before scheduling new speculative executions
-        final long blockedEndTimestamp =
-                System.currentTimeMillis() + blockSlowNodeDuration.toMillis();
-        final Collection<BlockedNode> nodesToBlock =
-                getSlowNodeIds(slowTasks).stream()
-                        .map(
-                                nodeId ->
-                                        new BlockedNode(
-                                                nodeId,
-                                                "Node is detected to be slow.",
-                                                blockedEndTimestamp))
-                        .collect(Collectors.toList());
-        blocklistOperations.addNewBlockedNodes(nodesToBlock);
+        blockSlowNodes(slowTasks);
 
         final List<Execution> newSpeculativeExecutions = new ArrayList<>();
         final Set<ExecutionVertexID> verticesToDeploy = new HashSet<>();
@@ -288,16 +338,37 @@ public class SpeculativeScheduler extends AdaptiveBatchScheduler
                         executionVertex.getID(),
                         newSpeculativeExecutionsToDeploy);
 
+                final Collection<Execution> attempts =
+                        IntStream.range(0, newSpeculativeExecutionsToDeploy)
+                                .mapToObj(executionVertex::createNewSpeculativeExecution)
+                                .collect(Collectors.toList());
+
+                setupSubtaskGatewayForAttempts(executionVertex, attempts);
                 verticesToDeploy.add(executionVertexId);
-                IntStream.range(0, newSpeculativeExecutionsToDeploy)
-                        .mapToObj(executionVertex::createNewSpeculativeExecution)
-                        .forEach(newSpeculativeExecutions::add);
+                newSpeculativeExecutions.addAll(attempts);
             }
         }
 
         executionDeployer.allocateSlotsAndDeploy(
                 newSpeculativeExecutions,
                 executionVertexVersioner.getExecutionVertexVersions(verticesToDeploy));
+    }
+
+    private void blockSlowNodes(Map<ExecutionVertexID, Collection<ExecutionAttemptID>> slowTasks) {
+        if (!blockSlowNodeDuration.isZero()) {
+            final long blockedEndTimestamp =
+                    System.currentTimeMillis() + blockSlowNodeDuration.toMillis();
+            final Collection<BlockedNode> nodesToBlock =
+                    getSlowNodeIds(slowTasks).stream()
+                            .map(
+                                    nodeId ->
+                                            new BlockedNode(
+                                                    nodeId,
+                                                    "Node is detected to be slow.",
+                                                    blockedEndTimestamp))
+                            .collect(Collectors.toList());
+            blocklistOperations.addNewBlockedNodes(nodesToBlock);
+        }
     }
 
     private Set<String> getSlowNodeIds(
@@ -307,8 +378,42 @@ public class SpeculativeScheduler extends AdaptiveBatchScheduler
 
         return slowExecutions.stream()
                 .map(id -> getExecutionGraph().getRegisteredExecutions().get(id))
-                .map(Execution::getAssignedResourceLocation)
+                .map(
+                        e -> {
+                            checkNotNull(
+                                    e.getAssignedResource(),
+                                    "The reported slow node have not been assigned a slot. "
+                                            + "This is unexpected and indicates that there is "
+                                            + "something wrong with the slow task detector.");
+                            return e.getAssignedResourceLocation();
+                        })
                 .map(TaskManagerLocation::getNodeId)
                 .collect(Collectors.toSet());
+    }
+
+    private void setupSubtaskGatewayForAttempts(
+            final SpeculativeExecutionVertex executionVertex,
+            final Collection<Execution> attempts) {
+
+        final Set<Integer> attemptNumbers =
+                attempts.stream().map(Execution::getAttemptNumber).collect(Collectors.toSet());
+
+        executionVertex
+                .getJobVertex()
+                .getOperatorCoordinators()
+                .forEach(
+                        operatorCoordinator ->
+                                operatorCoordinator.setupSubtaskGatewayForAttempts(
+                                        executionVertex.getParallelSubtaskIndex(), attemptNumbers));
+    }
+
+    @VisibleForTesting
+    long getNumSlowExecutionVertices() {
+        return numSlowExecutionVertices;
+    }
+
+    @VisibleForTesting
+    long getNumEffectiveSpeculativeExecutions() {
+        return numEffectiveSpeculativeExecutionsCounter.getCount();
     }
 }
