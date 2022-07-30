@@ -42,6 +42,7 @@ import org.apache.flink.table.gateway.api.session.SessionHandle;
 import org.apache.flink.table.gateway.service.operation.OperationExecutor;
 import org.apache.flink.table.gateway.service.operation.OperationManager;
 import org.apache.flink.table.gateway.service.utils.SqlExecutionException;
+import org.apache.flink.table.module.Module;
 import org.apache.flink.table.module.ModuleManager;
 import org.apache.flink.table.resource.ResourceManager;
 import org.apache.flink.util.FlinkUserCodeClassLoaders;
@@ -56,7 +57,9 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 
@@ -97,20 +100,6 @@ public class SessionContext {
         this.operationManager = operationManager;
     }
 
-    /** Close resources, e.g. catalogs. */
-    public void close() {
-        operationManager.close();
-
-        for (String name : sessionState.catalogManager.listCatalogs()) {
-            sessionState.catalogManager.getCatalog(name).ifPresent(Catalog::close);
-        }
-        try {
-            userClassloader.close();
-        } catch (IOException e) {
-            LOG.debug("Error while closing class loader.", e);
-        }
-    }
-
     // --------------------------------------------------------------------------------------------
     // Getter/Setter
     // --------------------------------------------------------------------------------------------
@@ -121,6 +110,14 @@ public class SessionContext {
 
     public Map<String, String> getConfigMap() {
         return sessionConf.toMap();
+    }
+
+    public OperationManager getOperationManager() {
+        return operationManager;
+    }
+
+    public EndpointVersion getEndpointVersion() {
+        return endpointVersion;
     }
 
     public void set(String key, String value) {
@@ -158,8 +155,45 @@ public class SessionContext {
     // Method to execute commands
     // --------------------------------------------------------------------------------------------
 
+    public void registerCatalog(String catalogName, Catalog catalog) {
+        sessionState.catalogManager.registerCatalog(catalogName, catalog);
+    }
+
+    public void registerModuleAtHead(String moduleName, Module module) {
+        Deque<String> moduleNames = new ArrayDeque<>(sessionState.moduleManager.listModules());
+        moduleNames.addFirst(moduleName);
+
+        sessionState.moduleManager.loadModule(moduleName, module);
+        sessionState.moduleManager.useModules(moduleNames.toArray(new String[0]));
+    }
+
+    public void setCurrentCatalog(String catalog) {
+        sessionState.catalogManager.setCurrentCatalog(catalog);
+    }
+
+    public void setCurrentDatabase(String database) {
+        sessionState.catalogManager.setCurrentDatabase(database);
+    }
+
     public OperationExecutor createOperationExecutor(Configuration executionConfig) {
         return new OperationExecutor(this, executionConfig);
+    }
+
+    /** Close resources, e.g. catalogs. */
+    public void close() {
+        operationManager.close();
+        for (String name : sessionState.catalogManager.listCatalogs()) {
+            try {
+                sessionState.catalogManager.getCatalog(name).ifPresent(Catalog::close);
+            } catch (Throwable t) {
+                LOG.error("Failed to close catalog %s.", t);
+            }
+        }
+        try {
+            userClassloader.close();
+        } catch (IOException e) {
+            LOG.debug("Error while closing class loader.", e);
+        }
     }
 
     // --------------------------------------------------------------------------------------------
@@ -253,11 +287,7 @@ public class SessionContext {
                 sessionState.functionCatalog);
     }
 
-    public OperationManager getOperationManager() {
-        return operationManager;
-    }
-
-    private static TableEnvironmentInternal createStreamTableEnvironment(
+    private TableEnvironmentInternal createStreamTableEnvironment(
             StreamExecutionEnvironment env,
             EnvironmentSettings settings,
             TableConfig tableConfig,

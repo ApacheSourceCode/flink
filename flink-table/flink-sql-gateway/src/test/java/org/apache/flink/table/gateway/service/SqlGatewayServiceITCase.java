@@ -21,7 +21,10 @@ package org.apache.flink.table.gateway.service;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.testutils.CommonTestUtils;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.internal.TableEnvironmentInternal;
+import org.apache.flink.table.catalog.CatalogDatabaseImpl;
 import org.apache.flink.table.catalog.Column;
+import org.apache.flink.table.catalog.GenericInMemoryCatalog;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
@@ -40,6 +43,7 @@ import org.apache.flink.table.gateway.service.session.SessionManager;
 import org.apache.flink.table.gateway.service.utils.IgnoreExceptionHandler;
 import org.apache.flink.table.gateway.service.utils.SqlExecutionException;
 import org.apache.flink.table.gateway.service.utils.SqlGatewayServiceExtension;
+import org.apache.flink.table.planner.runtime.batch.sql.TestModule;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 import org.apache.flink.util.function.RunnableWithException;
@@ -125,6 +129,33 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
     }
 
     @Test
+    public void testOpenSessionWithEnvironment() throws Exception {
+        String catalogName = "default";
+        String databaseName = "testDb";
+        String moduleName = "testModule";
+        GenericInMemoryCatalog defaultCatalog = new GenericInMemoryCatalog(catalogName);
+        defaultCatalog.createDatabase(
+                databaseName, new CatalogDatabaseImpl(Collections.emptyMap(), null), true);
+        SessionEnvironment environment =
+                SessionEnvironment.newBuilder()
+                        .setSessionEndpointVersion(MockedEndpointVersion.V1)
+                        .registerCatalog(catalogName, defaultCatalog)
+                        .registerModuleAtHead(moduleName, new TestModule())
+                        .setDefaultCatalog(catalogName)
+                        .setDefaultDatabase(databaseName)
+                        .build();
+
+        SessionHandle sessionHandle = service.openSession(environment);
+        TableEnvironmentInternal tableEnv =
+                service.getSession(sessionHandle)
+                        .createExecutor(new Configuration())
+                        .getTableEnvironment();
+        assertEquals(catalogName, tableEnv.getCurrentCatalog());
+        assertEquals(databaseName, tableEnv.getCurrentDatabase());
+        assertTrue(new HashSet<>(Arrays.asList(tableEnv.listModules())).contains(moduleName));
+    }
+
+    @Test
     public void testFetchResultsInRunning() throws Exception {
         SessionHandle sessionHandle = service.openSession(defaultSessionEnvironment);
 
@@ -162,12 +193,12 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
 
         startRunningLatch.await();
         assertEquals(
-                new OperationInfo(OperationStatus.RUNNING, OperationType.UNKNOWN, true),
+                new OperationInfo(OperationStatus.RUNNING, OperationType.UNKNOWN),
                 service.getOperationInfo(sessionHandle, operationHandle));
 
         endRunningLatch.countDown();
         OperationInfo expectedInfo =
-                new OperationInfo(OperationStatus.FINISHED, OperationType.UNKNOWN, true);
+                new OperationInfo(OperationStatus.FINISHED, OperationType.UNKNOWN);
 
         CommonTestUtils.waitUtil(
                 () -> service.getOperationInfo(sessionHandle, operationHandle).equals(expectedInfo),
@@ -206,13 +237,13 @@ public class SqlGatewayServiceITCase extends AbstractTestBase {
 
         startRunningLatch.await();
         assertEquals(
-                new OperationInfo(OperationStatus.RUNNING, OperationType.UNKNOWN, true),
+                new OperationInfo(OperationStatus.RUNNING, OperationType.UNKNOWN),
                 service.getOperationInfo(sessionHandle, operationHandle));
 
         service.cancelOperation(sessionHandle, operationHandle);
 
         assertEquals(
-                new OperationInfo(OperationStatus.CANCELED, OperationType.UNKNOWN, true),
+                new OperationInfo(OperationStatus.CANCELED, OperationType.UNKNOWN),
                 service.getOperationInfo(sessionHandle, operationHandle));
         service.closeOperation(sessionHandle, operationHandle);
         assertEquals(0, sessionManager.getOperationCount(sessionHandle));
