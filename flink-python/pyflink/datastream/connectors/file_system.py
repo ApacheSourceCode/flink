@@ -17,9 +17,16 @@
 ################################################################################
 import warnings
 
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from pyflink.table.types import RowType
+
 from pyflink.common import Duration, Encoder
-from pyflink.datastream.functions import SinkFunction
 from pyflink.datastream.connectors import Source, Sink
+from pyflink.datastream.connectors.base import SupportsPreprocessing, StreamTransformer
+from pyflink.datastream.functions import SinkFunction
+from pyflink.datastream.utils import JavaObjectWrapper
 from pyflink.java_gateway import get_gateway
 from pyflink.util.java_utils import to_jarray
 
@@ -138,6 +145,40 @@ class BulkFormat(object):
 
     def __init__(self, j_bulk_format):
         self._j_bulk_format = j_bulk_format
+
+
+class InputFormat(JavaObjectWrapper):
+    """
+    The Python wrapper of Java InputFormat interface, which is the base interface for data sources
+    that produce records.
+    """
+
+    def __init__(self, j_input_format):
+        super().__init__(j_input_format)
+
+
+class BulkWriterFactory(JavaObjectWrapper):
+    """
+    The Python wrapper of Java BulkWriter.Factory interface, which is the base interface for data
+    sinks that write records into files in a bulk manner.
+    """
+
+    def __init__(self, j_bulk_writer_factory):
+        super().__init__(j_bulk_writer_factory)
+
+
+class RowDataBulkWriterFactory(BulkWriterFactory):
+    """
+    A :class:`BulkWriterFactory` that receives records with RowData type. This is for indicating
+    that Row record from Python must be first converted to RowData.
+    """
+
+    def __init__(self, j_bulk_writer_factory, row_type: 'RowType'):
+        super().__init__(j_bulk_writer_factory)
+        self._row_type = row_type
+
+    def get_row_type(self) -> 'RowType':
+        return self._row_type
 
 
 class FileSourceBuilder(object):
@@ -362,7 +403,7 @@ class RollingPolicy(object):
     def default_rolling_policy(
             part_size: int = 1024 * 1024 * 128,
             rollover_interval: int = 60 * 1000,
-            inactivity_interval: int = 60 * 1000) -> 'RollingPolicy':
+            inactivity_interval: int = 60 * 1000) -> 'DefaultRollingPolicy':
         """
         Returns the default implementation of the RollingPolicy.
 
@@ -387,16 +428,28 @@ class RollingPolicy(object):
             .withRolloverInterval(rollover_interval) \
             .withInactivityInterval(inactivity_interval) \
             .build()
-        return RollingPolicy(j_rolling_policy)
+        return DefaultRollingPolicy(j_rolling_policy)
 
     @staticmethod
-    def on_checkpoint_rolling_policy() -> 'RollingPolicy':
+    def on_checkpoint_rolling_policy() -> 'OnCheckpointRollingPolicy':
         """
         Returns a RollingPolicy which rolls (ONLY) on every checkpoint.
         """
         JOnCheckpointRollingPolicy = get_gateway().jvm.org.apache.flink.streaming.api.functions. \
             sink.filesystem.rollingpolicies.OnCheckpointRollingPolicy
-        return RollingPolicy(JOnCheckpointRollingPolicy.build())
+        return OnCheckpointRollingPolicy(JOnCheckpointRollingPolicy.build())
+
+
+class DefaultRollingPolicy(RollingPolicy):
+
+    def __init__(self, j_rolling_policy):
+        super().__init__(j_rolling_policy)
+
+
+class OnCheckpointRollingPolicy(RollingPolicy):
+
+    def __init__(self, j_rolling_policy):
+        super().__init__(j_rolling_policy)
 
 
 class OutputFileConfig(object):
@@ -446,7 +499,7 @@ class OutputFileConfig(object):
             return OutputFileConfig(self.part_prefix, self.part_suffix)
 
 
-class FileSink(Sink):
+class FileSink(Sink, SupportsPreprocessing):
     """
     A unified sink that emits its input elements to FileSystem files within buckets. This
     sink achieves exactly-once semantics for both BATCH and STREAMING.
@@ -493,8 +546,12 @@ class FileSink(Sink):
     the checkpoint from which we restore.
     """
 
-    def __init__(self, j_file_sink):
+    def __init__(self, j_file_sink, transformer: Optional[StreamTransformer] = None):
         super(FileSink, self).__init__(sink=j_file_sink)
+        self._transformer = transformer
+
+    def get_transformer(self) -> Optional[StreamTransformer]:
+        return self._transformer
 
     class RowFormatBuilder(object):
         """
@@ -534,6 +591,71 @@ class FileSink(Sink):
 
         return FileSink.RowFormatBuilder(
             JFileSink.forRowFormat(JPath(base_path), encoder._j_encoder))
+
+    class BulkFormatBuilder(object):
+        """
+        Builder for the vanilla FileSink using a bulk format.
+        """
+
+        def __init__(self, j_bulk_format_builder):
+            self._j_bulk_format_builder = j_bulk_format_builder
+            self._transformer = None
+
+        def with_bucket_check_interval(self, interval: int) -> 'FileSink.BulkFormatBuilder':
+            """
+            :param interval: The check interval in milliseconds.
+            """
+            self._j_bulk_format_builder.withBucketCheckInterval(interval)
+            return self
+
+        def with_bucket_assigner(self, bucket_assigner: BucketAssigner) \
+                -> 'FileSink.BulkFormatBuilder':
+            self._j_bulk_format_builder.withBucketAssigner(bucket_assigner._j_bucket_assigner)
+            return self
+
+        def with_rolling_policy(self, rolling_policy: OnCheckpointRollingPolicy) \
+                -> 'FileSink.BulkFormatBuilder':
+            self._j_bulk_format_builder.withRollingPolicy(rolling_policy._j_rolling_policy)
+            return self
+
+        def with_output_file_config(self, output_file_config: OutputFileConfig) \
+                -> 'FileSink.BulkFormatBuilder':
+            self._j_bulk_format_builder.withOutputFileConfig(
+                output_file_config._j_output_file_config)
+            return self
+
+        def _with_row_type(self, row_type: 'RowType') -> 'FileSink.BulkFormatBuilder':
+            from pyflink.datastream.data_stream import DataStream
+            from pyflink.table.types import _to_java_data_type
+
+            class RowRowTransformer(StreamTransformer):
+
+                def apply(self, ds):
+                    jvm = get_gateway().jvm
+                    j_map_function = jvm.org.apache.flink.python.util.PythonConnectorUtils \
+                        .RowRowMapper(_to_java_data_type(row_type))
+                    return DataStream(ds._j_data_stream.process(j_map_function))
+
+            self._transformer = RowRowTransformer()
+            return self
+
+        def build(self) -> 'FileSink':
+            return FileSink(self._j_bulk_format_builder.build(), self._transformer)
+
+    @staticmethod
+    def for_bulk_format(base_path: str, writer_factory: BulkWriterFactory) \
+            -> 'FileSink.BulkFormatBuilder':
+        jvm = get_gateway().jvm
+        j_path = jvm.org.apache.flink.core.fs.Path(base_path)
+        JFileSink = jvm.org.apache.flink.connector.file.sink.FileSink
+
+        builder = FileSink.BulkFormatBuilder(
+            JFileSink.forBulkFormat(j_path, writer_factory.get_java_object())
+        )
+        if isinstance(writer_factory, RowDataBulkWriterFactory):
+            return builder._with_row_type(writer_factory.get_row_type())
+        else:
+            return builder
 
 
 # ---- StreamingFileSink ----
@@ -598,3 +720,42 @@ class StreamingFileSink(SinkFunction):
         j_default_row_format_builder = get_gateway().jvm.org.apache.flink.streaming.api.\
             functions.sink.filesystem.StreamingFileSink.forRowFormat(j_path, encoder._j_encoder)
         return StreamingFileSink.DefaultRowFormatBuilder(j_default_row_format_builder)
+
+    class DefaultBulkFormatBuilder(object):
+
+        def __init__(self, j_default_bulk_format_builder):
+            self._j_default_bulk_format_builder = j_default_bulk_format_builder
+
+        def with_bucket_check_interval(self, interval: int) \
+                -> 'StreamingFileSink.DefaultBulkFormatBuilder':
+            self._j_default_bulk_format_builder.withBucketCheckInterval(interval)
+            return self
+
+        def with_bucket_assigner(self, bucket_assigner: BucketAssigner) \
+                -> 'StreamingFileSink.DefaultBulkFormatBuilder':
+            self._j_default_bulk_format_builder.withBucketAssigner(
+                bucket_assigner._j_bucket_assigner)
+            return self
+
+        def with_rolling_policy(self, policy: OnCheckpointRollingPolicy) \
+                -> 'StreamingFileSink.DefaultBulkFormatBuilder':
+            self._j_default_bulk_format_builder.withRollingPolicy(policy._j_rolling_policy)
+            return self
+
+        def with_output_file_config(self, output_file_config: 'OutputFileConfig') \
+                -> 'StreamingFileSink.DefaultBulkFormatBuilder':
+            self._j_default_bulk_format_builder.withOutputFileConfig(
+                output_file_config._j_output_file_config)
+            return self
+
+        def build(self):
+            j_streaming_file_sink = self._j_default_bulk_format_builder.build()
+            return StreamingFileSink(j_streaming_file_sink)
+
+    @staticmethod
+    def for_bulk_format(base_path: str, writer_factory: BulkWriterFactory):
+        jvm = get_gateway().jvm
+        j_path = jvm.org.apache.flink.core.fs.Path(base_path)
+        j_default_bulk_format_builder = jvm.org.apache.flink.streaming.api.functions.sink \
+            .filesystem.StreamingFileSink.forBulkFormat(j_path, writer_factory.get_java_object())
+        return StreamingFileSink.DefaultBulkFormatBuilder(j_default_bulk_format_builder)

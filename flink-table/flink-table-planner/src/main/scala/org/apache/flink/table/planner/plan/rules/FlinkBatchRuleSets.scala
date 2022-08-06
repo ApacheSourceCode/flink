@@ -18,7 +18,7 @@
 package org.apache.flink.table.planner.plan.rules
 
 import org.apache.flink.table.planner.plan.nodes.logical._
-import org.apache.flink.table.planner.plan.rules.logical.{RemoveUnreachableCoalesceArgumentsRule, _}
+import org.apache.flink.table.planner.plan.rules.logical._
 import org.apache.flink.table.planner.plan.rules.physical.FlinkExpandConversionRule
 import org.apache.flink.table.planner.plan.rules.physical.batch._
 
@@ -324,7 +324,8 @@ object FlinkBatchRuleSets {
     FlinkLogicalMatch.CONVERTER,
     FlinkLogicalSink.CONVERTER,
     FlinkLogicalLegacySink.CONVERTER,
-    FlinkLogicalDistribution.BATCH_CONVERTER
+    FlinkLogicalDistribution.BATCH_CONVERTER,
+    FlinkLogicalScriptTransform.BATCH_CONVERTER
   )
 
   /** RuleSet to do logical optimize for batch */
@@ -422,18 +423,25 @@ object FlinkBatchRuleSets {
     BatchPhysicalSinkRule.INSTANCE,
     BatchPhysicalLegacySinkRule.INSTANCE,
     // hive distribution
-    BatchPhysicalDistributionRule.INSTANCE
+    BatchPhysicalDistributionRule.INSTANCE,
+    // hive transform
+    BatchPhysicalScriptTransformRule.INSTANCE
   )
 
   /** RuleSet to optimize plans after batch exec execution. */
   val PHYSICAL_REWRITE: RuleSet = RuleSets.ofList(
-    EnforceLocalHashAggRule.INSTANCE,
-    EnforceLocalSortAggRule.INSTANCE,
-    PushLocalHashAggIntoScanRule.INSTANCE,
-    PushLocalHashAggWithCalcIntoScanRule.INSTANCE,
-    PushLocalSortAggIntoScanRule.INSTANCE,
-    PushLocalSortAggWithSortIntoScanRule.INSTANCE,
-    PushLocalSortAggWithCalcIntoScanRule.INSTANCE,
-    PushLocalSortAggWithSortAndCalcIntoScanRule.INSTANCE
+    (RuleSets
+      .ofList(
+        EnforceLocalHashAggRule.INSTANCE,
+        EnforceLocalSortAggRule.INSTANCE,
+        PushLocalHashAggIntoScanRule.INSTANCE,
+        PushLocalHashAggWithCalcIntoScanRule.INSTANCE,
+        PushLocalSortAggIntoScanRule.INSTANCE,
+        PushLocalSortAggWithSortIntoScanRule.INSTANCE,
+        PushLocalSortAggWithCalcIntoScanRule.INSTANCE,
+        PushLocalSortAggWithSortAndCalcIntoScanRule.INSTANCE
+      )
+      .asScala ++
+      DynamicPartitionPruningRule.DYNAMIC_PARTITION_PRUNING_RULES.asScala).asJava
   )
 }

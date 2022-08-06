@@ -121,6 +121,8 @@ import static org.apache.flink.table.api.config.TableConfigOptions.TABLE_SQL_DIA
 import static org.apache.flink.table.endpoint.hive.HiveServer2EndpointVersion.HIVE_CLI_SERVICE_PROTOCOL_V10;
 import static org.apache.flink.table.endpoint.hive.util.HiveJdbcParameterUtils.getUsedDefaultDatabase;
 import static org.apache.flink.table.endpoint.hive.util.HiveJdbcParameterUtils.validateAndNormalize;
+import static org.apache.flink.table.endpoint.hive.util.OperationExecutorFactory.createGetCatalogsExecutor;
+import static org.apache.flink.table.endpoint.hive.util.OperationExecutorFactory.createGetSchemasExecutor;
 import static org.apache.flink.table.endpoint.hive.util.ThriftObjectConversions.toFetchOrientation;
 import static org.apache.flink.table.endpoint.hive.util.ThriftObjectConversions.toOperationHandle;
 import static org.apache.flink.table.endpoint.hive.util.ThriftObjectConversions.toSessionHandle;
@@ -318,9 +320,9 @@ public class HiveServer2Endpoint implements TCLIService.Iface, SqlGatewayEndpoin
             resp.setServerProtocolVersion(sessionVersion.getVersion());
             resp.setSessionHandle(toTSessionHandle(sessionHandle));
             resp.setConfiguration(service.getSessionConfig(sessionHandle));
-        } catch (Exception e) {
-            LOG.error("Failed to OpenSession.", e);
-            resp.setStatus(toTStatus(e));
+        } catch (Throwable t) {
+            LOG.error("Failed to OpenSession.", t);
+            resp.setStatus(toTStatus(t));
         }
         return resp;
     }
@@ -390,12 +392,49 @@ public class HiveServer2Endpoint implements TCLIService.Iface, SqlGatewayEndpoin
 
     @Override
     public TGetCatalogsResp GetCatalogs(TGetCatalogsReq tGetCatalogsReq) throws TException {
-        throw new UnsupportedOperationException(ERROR_MESSAGE);
+        TGetCatalogsResp resp = new TGetCatalogsResp();
+        try {
+            SessionHandle sessionHandle = toSessionHandle(tGetCatalogsReq.getSessionHandle());
+            OperationHandle operationHandle =
+                    service.submitOperation(
+                            sessionHandle,
+                            OperationType.LIST_CATALOGS,
+                            createGetCatalogsExecutor(service, sessionHandle));
+            resp.setStatus(OK_STATUS);
+            resp.setOperationHandle(
+                    toTOperationHandle(
+                            sessionHandle, operationHandle, OperationType.LIST_CATALOGS));
+        } catch (Throwable t) {
+            LOG.error("Failed to GetCatalogs.", t);
+            resp.setStatus(toTStatus(t));
+        }
+        return resp;
     }
 
     @Override
     public TGetSchemasResp GetSchemas(TGetSchemasReq tGetSchemasReq) throws TException {
-        throw new UnsupportedOperationException(ERROR_MESSAGE);
+        TGetSchemasResp resp = new TGetSchemasResp();
+        try {
+            SessionHandle sessionHandle = toSessionHandle(tGetSchemasReq.getSessionHandle());
+            String catalogName = tGetSchemasReq.getCatalogName();
+            OperationHandle operationHandle =
+                    service.submitOperation(
+                            sessionHandle,
+                            OperationType.LIST_SCHEMAS,
+                            createGetSchemasExecutor(
+                                    service,
+                                    sessionHandle,
+                                    catalogName,
+                                    tGetSchemasReq.getSchemaName()));
+
+            resp.setStatus(OK_STATUS);
+            resp.setOperationHandle(
+                    toTOperationHandle(sessionHandle, operationHandle, OperationType.LIST_SCHEMAS));
+        } catch (Throwable t) {
+            LOG.error("Failed to GetSchemas.", t);
+            resp.setStatus(toTStatus(t));
+        }
+        return resp;
     }
 
     @Override
@@ -458,13 +497,33 @@ public class HiveServer2Endpoint implements TCLIService.Iface, SqlGatewayEndpoin
     @Override
     public TCancelOperationResp CancelOperation(TCancelOperationReq tCancelOperationReq)
             throws TException {
-        throw new UnsupportedOperationException(ERROR_MESSAGE);
+        TCancelOperationResp resp = new TCancelOperationResp();
+        try {
+            TOperationHandle operationHandle = tCancelOperationReq.getOperationHandle();
+            service.cancelOperation(
+                    toSessionHandle(operationHandle), toOperationHandle(operationHandle));
+            resp.setStatus(OK_STATUS);
+        } catch (Throwable t) {
+            LOG.error("Failed to CancelOperation.", t);
+            resp.setStatus(toTStatus(t));
+        }
+        return resp;
     }
 
     @Override
     public TCloseOperationResp CloseOperation(TCloseOperationReq tCloseOperationReq)
             throws TException {
-        throw new UnsupportedOperationException(ERROR_MESSAGE);
+        TCloseOperationResp resp = new TCloseOperationResp();
+        try {
+            TOperationHandle operationHandle = tCloseOperationReq.getOperationHandle();
+            service.closeOperation(
+                    toSessionHandle(operationHandle), toOperationHandle(operationHandle));
+            resp.setStatus(OK_STATUS);
+        } catch (Throwable t) {
+            LOG.error("Failed to CloseOperation.", t);
+            resp.setStatus(toTStatus(t));
+        }
+        return resp;
     }
 
     @Override

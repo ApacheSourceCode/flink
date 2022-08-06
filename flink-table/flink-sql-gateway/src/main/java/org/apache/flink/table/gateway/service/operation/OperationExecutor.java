@@ -20,6 +20,7 @@ package org.apache.flink.table.gateway.service.operation;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.CatalogNotExistException;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.api.internal.TableResultInternal;
@@ -43,9 +44,11 @@ import org.apache.flink.table.operations.command.SetOperation;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.apache.flink.table.gateway.service.utils.Constants.JOB_ID;
 import static org.apache.flink.table.gateway.service.utils.Constants.SET_KEY;
@@ -98,6 +101,30 @@ public class OperationExecutor {
                     handle, result.getResolvedSchema(), collect(result.collectInternal()));
         }
     }
+
+    public String getCurrentCatalog() {
+        return getTableEnvironment().getCatalogManager().getCurrentCatalog();
+    }
+
+    public Set<String> listCatalogs() {
+        return getTableEnvironment().getCatalogManager().listCatalogs();
+    }
+
+    public Set<String> listDatabases(String catalogName) {
+        return new HashSet<>(
+                getTableEnvironment()
+                        .getCatalogManager()
+                        .getCatalog(catalogName)
+                        .orElseThrow(
+                                () ->
+                                        new CatalogNotExistException(
+                                                String.format(
+                                                        "Catalog '%s' does not exist.",
+                                                        catalogName)))
+                        .listDatabases());
+    }
+
+    // --------------------------------------------------------------------------------------------
 
     @VisibleForTesting
     public TableEnvironmentInternal getTableEnvironment() {

@@ -33,6 +33,7 @@ import org.apache.flink.table.gateway.api.session.SessionHandle;
 import org.apache.flink.table.gateway.api.utils.SqlGatewayException;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 
 /** A service of SQL gateway is responsible for handling requests from the endpoints. */
@@ -135,7 +136,7 @@ public interface SqlGatewayService {
             throws SqlGatewayException;
 
     // -------------------------------------------------------------------------------------------
-    // Statements
+    // Statements API
     // -------------------------------------------------------------------------------------------
 
     /**
@@ -184,5 +185,36 @@ public interface SqlGatewayService {
             SessionHandle sessionHandle,
             OperationHandle operationHandle,
             FetchOrientation orientation,
-            int maxRows);
+            int maxRows)
+            throws SqlGatewayException;
+
+    // -------------------------------------------------------------------------------------------
+    // Catalog API
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Return current catalog name.
+     *
+     * @param sessionHandle handle to identify the session.
+     * @return name of the current catalog.
+     */
+    String getCurrentCatalog(SessionHandle sessionHandle) throws SqlGatewayException;
+
+    /**
+     * Return all available catalogs in the current session.
+     *
+     * @param sessionHandle handle to identify the session.
+     * @return names of the registered catalogs.
+     */
+    Set<String> listCatalogs(SessionHandle sessionHandle) throws SqlGatewayException;
+
+    /**
+     * Return all available schemas in the given catalog.
+     *
+     * @param sessionHandle handle to identify the session.
+     * @param catalogName name string of the given catalog.
+     * @return names of the registered schemas.
+     */
+    Set<String> listDatabases(SessionHandle sessionHandle, String catalogName)
+            throws SqlGatewayException;
 }

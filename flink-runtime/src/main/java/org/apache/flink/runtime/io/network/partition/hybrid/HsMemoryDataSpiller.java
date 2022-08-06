@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.io.network.partition.hybrid;
 
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.BufferCompressor;
 import org.apache.flink.runtime.io.network.partition.BufferReaderWriterUtil;
 import org.apache.flink.runtime.io.network.partition.hybrid.HsFileDataIndex.SpilledBuffer;
 import org.apache.flink.util.ExceptionUtils;
@@ -26,14 +27,23 @@ import org.apache.flink.util.FatalExitExceptionHandler;
 
 import org.apache.flink.shaded.guava30.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * This component is responsible for asynchronously writing in-memory data to disk. Each spilling
@@ -56,11 +66,17 @@ public class HsMemoryDataSpiller implements AutoCloseable {
     /** File channel to write data. */
     private final FileChannel dataFileChannel;
 
+    @Nullable private final BufferCompressor bufferCompressor;
+
     /** Records the current writing location. */
     private long totalBytesWritten;
 
-    public HsMemoryDataSpiller(FileChannel dataFileChannel) {
-        this.dataFileChannel = dataFileChannel;
+    public HsMemoryDataSpiller(Path dataFilePath, @Nullable BufferCompressor bufferCompressor)
+            throws IOException {
+        this.dataFileChannel =
+                FileChannel.open(
+                        dataFilePath, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        this.bufferCompressor = bufferCompressor;
     }
 
     /**
@@ -82,6 +98,10 @@ public class HsMemoryDataSpiller implements AutoCloseable {
             List<BufferWithIdentity> toWrite,
             CompletableFuture<List<SpilledBuffer>> spilledFuture) {
         try {
+            toWrite =
+                    toWrite.stream()
+                            .map(this::compressBuffersIfPossible)
+                            .collect(Collectors.toList());
             List<SpilledBuffer> spilledBuffers = new ArrayList<>();
             long expectedBytes = createSpilledBuffersAndGetTotalBytes(toWrite, spilledBuffers);
             // write all buffers to file
@@ -145,8 +165,50 @@ public class HsMemoryDataSpiller implements AutoCloseable {
         bufferWithHeaders[index + 1] = buffer.getNioBufferReadable();
     }
 
-    @Override
-    public void close() throws Exception {
+    /**
+     * Close this {@link HsMemoryDataSpiller} when resultPartition is closed. It means spiller will
+     * no longer accept new spilling operation.
+     *
+     * <p>This method only called by main task thread.
+     */
+    public void close() {
         ioExecutor.shutdown();
+    }
+
+    /**
+     * Release this {@link HsMemoryDataSpiller} when resultPartition is released. It means spiller
+     * will wait for all previous spilling operation done blocking and close the file channel.
+     *
+     * <p>This method only called by rpc thread.
+     */
+    public void release() {
+        try {
+            ioExecutor.shutdown();
+            if (!ioExecutor.awaitTermination(5L, TimeUnit.MINUTES)) {
+                throw new TimeoutException("Shutdown spilling thread timeout.");
+            }
+            dataFileChannel.close();
+        } catch (Exception e) {
+            ExceptionUtils.rethrow(e);
+        }
+    }
+
+    private BufferWithIdentity compressBuffersIfPossible(BufferWithIdentity bufferWithIdentity) {
+        Buffer buffer = bufferWithIdentity.getBuffer();
+        if (!canBeCompressed(buffer)) {
+            return bufferWithIdentity;
+        }
+
+        buffer = checkNotNull(bufferCompressor).compressToOriginalBuffer(buffer);
+        return new BufferWithIdentity(
+                buffer, bufferWithIdentity.getBufferIndex(), bufferWithIdentity.getChannelIndex());
+    }
+
+    /**
+     * Whether the buffer can be compressed or not. Note that event is not compressed because it is
+     * usually small and the size can become even larger after compression.
+     */
+    private boolean canBeCompressed(Buffer buffer) {
+        return bufferCompressor != null && buffer.isBuffer() && buffer.readableBytes() > 0;
     }
 }

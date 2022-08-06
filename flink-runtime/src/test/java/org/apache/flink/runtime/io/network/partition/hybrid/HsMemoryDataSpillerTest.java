@@ -22,6 +22,7 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.BufferCompressor;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.BufferReaderWriterUtil;
@@ -32,11 +33,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
@@ -44,9 +46,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link HsMemoryDataSpiller}. */
 @ExtendWith(TestLoggerExtension.class)
@@ -57,22 +61,26 @@ class HsMemoryDataSpillerTest {
     private static final long BUFFER_WITH_HEADER_SIZE =
             BUFFER_SIZE + BufferReaderWriterUtil.HEADER_LENGTH;
 
-    private FileChannel dataFileChannel;
-
     private HsMemoryDataSpiller memoryDataSpiller;
 
+    private @TempDir Path tempDir;
+
+    private Path dataFilePath;
+
     @BeforeEach
-    void before(@TempDir Path tempDir) throws Exception {
-        dataFileChannel =
-                FileChannel.open(
-                        Files.createFile(tempDir.resolve(".data")),
-                        StandardOpenOption.WRITE,
-                        StandardOpenOption.READ);
-        this.memoryDataSpiller = new HsMemoryDataSpiller(dataFileChannel);
+    void before() {
+        this.dataFilePath = tempDir.resolve(".data");
     }
 
-    @Test
-    void testSpillSuccessfully() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"LZ4", "LZO", "ZSTD", "NULL"})
+    void testSpillSuccessfully(String compressionFactoryName) throws Exception {
+        memoryDataSpiller =
+                createMemoryDataSpiller(
+                        dataFilePath,
+                        compressionFactoryName.equals("NULL")
+                                ? null
+                                : new BufferCompressor(BUFFER_SIZE, compressionFactoryName));
         List<BufferWithIdentity> bufferWithIdentityList = new ArrayList<>();
         bufferWithIdentityList.addAll(
                 createBufferWithIdentityList(
@@ -113,6 +121,32 @@ class HsMemoryDataSpillerTest {
                         Tuple2.of(4, 0),
                         Tuple2.of(5, 1),
                         Tuple2.of(6, 2)));
+    }
+
+    @Test
+    void testClose() throws Exception {
+        memoryDataSpiller = createMemoryDataSpiller(dataFilePath);
+        List<BufferWithIdentity> bufferWithIdentityList = new ArrayList<>();
+        bufferWithIdentityList.addAll(
+                createBufferWithIdentityList(
+                        0, Arrays.asList(Tuple2.of(0, 0), Tuple2.of(1, 1), Tuple2.of(2, 2))));
+        memoryDataSpiller.close();
+        assertThatThrownBy(() -> memoryDataSpiller.spillAsync(bufferWithIdentityList))
+                .isInstanceOf(RejectedExecutionException.class);
+    }
+
+    @Test
+    void testRelease() throws Exception {
+        memoryDataSpiller = createMemoryDataSpiller(dataFilePath);
+        List<BufferWithIdentity> bufferWithIdentityList =
+                new ArrayList<>(
+                        createBufferWithIdentityList(
+                                0,
+                                Arrays.asList(Tuple2.of(0, 0), Tuple2.of(1, 1), Tuple2.of(2, 2))));
+        memoryDataSpiller.spillAsync(bufferWithIdentityList);
+        // blocked until spill finished.
+        memoryDataSpiller.release();
+        checkData(Arrays.asList(Tuple2.of(0, 0), Tuple2.of(1, 1), Tuple2.of(2, 2)));
     }
 
     /**
@@ -158,19 +192,27 @@ class HsMemoryDataSpillerTest {
     }
 
     private void checkData(List<Tuple2<Integer, Integer>> dataAndIndexes) throws Exception {
-        // reset channel position for read.
-        dataFileChannel.position(0);
+        FileChannel readChannel = FileChannel.open(dataFilePath, StandardOpenOption.READ);
         ByteBuffer headerBuf = BufferReaderWriterUtil.allocatedHeaderBuffer();
         MemorySegment segment = MemorySegmentFactory.allocateUnpooledSegment(BUFFER_SIZE);
         for (Tuple2<Integer, Integer> dataAndIndex : dataAndIndexes) {
             Buffer buffer =
                     BufferReaderWriterUtil.readFromByteChannel(
-                            dataFileChannel, headerBuf, segment, (ignore) -> {});
+                            readChannel, headerBuf, segment, (ignore) -> {});
 
             assertThat(buffer.readableBytes()).isEqualTo(BUFFER_SIZE);
             assertThat(buffer.getNioBufferReadable().order(ByteOrder.nativeOrder()).getInt())
                     .isEqualTo(dataAndIndex.f0);
             assertThat(buffer.getDataType().isEvent()).isEqualTo(dataAndIndex.f1 % 2 == 0);
         }
+    }
+
+    private static HsMemoryDataSpiller createMemoryDataSpiller(Path dataFilePath) throws Exception {
+        return new HsMemoryDataSpiller(dataFilePath, null);
+    }
+
+    private static HsMemoryDataSpiller createMemoryDataSpiller(
+            Path dataFilePath, BufferCompressor bufferCompressor) throws Exception {
+        return new HsMemoryDataSpiller(dataFilePath, bufferCompressor);
     }
 }
