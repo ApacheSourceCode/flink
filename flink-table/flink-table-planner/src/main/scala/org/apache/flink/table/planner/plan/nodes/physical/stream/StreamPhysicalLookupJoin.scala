@@ -19,7 +19,7 @@ package org.apache.flink.table.planner.plan.nodes.physical.stream
 
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
-import org.apache.flink.table.planner.plan.nodes.exec.spec.TemporalTableSourceSpec
+import org.apache.flink.table.planner.plan.nodes.exec.spec.{LookupJoinHintSpec, TemporalTableSourceSpec}
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecLookupJoin
 import org.apache.flink.table.planner.plan.nodes.physical.common.CommonPhysicalLookupJoin
 import org.apache.flink.table.planner.plan.utils.{ChangelogPlanUtils, FlinkRexUtil, JoinTypeUtil}
@@ -27,7 +27,7 @@ import org.apache.flink.table.planner.utils.JavaScalaConversionUtil
 import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.plan.{RelOptCluster, RelOptTable, RelTraitSet}
-import org.apache.calcite.rel.RelNode
+import org.apache.calcite.rel.{RelNode, RelWriter}
 import org.apache.calcite.rel.core.{JoinInfo, JoinRelType}
 import org.apache.calcite.rex.RexProgram
 
@@ -39,19 +39,22 @@ import scala.collection.JavaConverters._
 class StreamPhysicalLookupJoin(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
-    input: RelNode,
+    inputRel: RelNode,
     temporalTable: RelOptTable,
     tableCalcProgram: Option[RexProgram],
     joinInfo: JoinInfo,
-    joinType: JoinRelType)
+    joinType: JoinRelType,
+    lookupHintSpec: Option[LookupJoinHintSpec],
+    val upsertMaterialize: Boolean = false)
   extends CommonPhysicalLookupJoin(
     cluster,
     traitSet,
-    input,
+    inputRel,
     temporalTable,
     tableCalcProgram,
     joinInfo,
-    joinType)
+    joinType,
+    lookupHintSpec)
   with StreamPhysicalRel {
 
   override def requireWatermark: Boolean = false
@@ -64,7 +67,24 @@ class StreamPhysicalLookupJoin(
       temporalTable,
       tableCalcProgram,
       joinInfo,
-      joinType)
+      joinType,
+      lookupHintSpec,
+      upsertMaterialize
+    )
+  }
+
+  def copy(upsertMaterialize: Boolean): StreamPhysicalLookupJoin = {
+    new StreamPhysicalLookupJoin(
+      cluster,
+      traitSet,
+      getInput,
+      temporalTable,
+      tableCalcProgram,
+      joinInfo,
+      joinType,
+      lookupHintSpec,
+      upsertMaterialize
+    )
   }
 
   override def translateToExecNode(): ExecNode[_] = {
@@ -75,6 +95,9 @@ class StreamPhysicalLookupJoin(
       case _ =>
         (null, null)
     }
+    val inputChangelogMode =
+      ChangelogPlanUtils.getChangelogMode(getInput.asInstanceOf[StreamPhysicalRel]).get
+
     new StreamExecLookupJoin(
       unwrapTableConfig(this),
       JoinTypeUtil.getFlinkJoinType(joinType),
@@ -83,10 +106,18 @@ class StreamPhysicalLookupJoin(
       allLookupKeys.map(item => (Int.box(item._1), item._2)).asJava,
       projectionOnTemporalTable,
       filterOnTemporalTable,
-      ChangelogPlanUtils.inputInsertOnly(this),
+      inputChangelogMode,
       InputProperty.DEFAULT,
       FlinkTypeFactory.toLogicalRowType(getRowType),
+      lookupKeyContainsPrimaryKey(),
+      upsertMaterialize,
+      lookupHintSpec.orNull,
       getRelDetailedDescription)
   }
 
+  override def explainTerms(pw: RelWriter): RelWriter = {
+    super
+      .explainTerms(pw)
+      .itemIf("upsertMaterialize", "true", upsertMaterialize)
+  }
 }

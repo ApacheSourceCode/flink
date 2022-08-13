@@ -18,19 +18,27 @@
 
 package org.apache.flink.runtime.io.network.partition.hybrid;
 
+import org.apache.flink.core.testutils.CheckedThread;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.Buffer.DataType;
+import org.apache.flink.runtime.io.network.buffer.BufferPool;
+import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
 import org.apache.flink.runtime.io.network.partition.BufferAvailabilityListener;
 import org.apache.flink.runtime.io.network.partition.NoOpBufferAvailablityListener;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartition.BufferAndBacklog;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView.AvailabilityWithBacklog;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.ByteBuffer;
+import java.nio.file.Path;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.apache.flink.runtime.io.network.partition.hybrid.HybridShuffleTestUtils.createTestingOutputMetrics;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -61,6 +69,60 @@ class HsSubpartitionViewTest {
         BufferAndBacklog nextBuffer = subpartitionView.getNextBuffer();
         assertThat(consumeBufferFromMemoryFuture).isNotCompleted();
         assertThat(nextBuffer).isSameAs(bufferAndBacklog);
+    }
+
+    @Test
+    @Timeout(60)
+    void testDeadLock(@TempDir Path dataFilePath) throws Exception {
+        final int bufferSize = 16;
+        NetworkBufferPool networkBufferPool = new NetworkBufferPool(10, bufferSize);
+        BufferPool bufferPool = networkBufferPool.createBufferPool(10, 10);
+        HsSubpartitionView subpartitionView = createSubpartitionView();
+
+        CompletableFuture<Void> acquireWriteLock = new CompletableFuture<>();
+
+        CheckedThread consumerThread =
+                new CheckedThread() {
+                    @Override
+                    public void go() throws Exception {
+                        // blocking until other thread acquire write lock.
+                        acquireWriteLock.get();
+                        subpartitionView.getNextBuffer();
+                    }
+                };
+
+        TestingSpillingStrategy spillingStrategy =
+                TestingSpillingStrategy.builder()
+                        .setOnMemoryUsageChangedFunction((ignore1, ignore2) -> Optional.empty())
+                        .setDecideActionWithGlobalInfoFunction(
+                                (spillingInfoProvider) -> {
+                                    acquireWriteLock.complete(null);
+                                    try {
+                                        consumerThread.trySync(10);
+                                    } catch (Exception e) {
+                                        throw new RuntimeException(e);
+                                    }
+                                    spillingInfoProvider.getNextBufferIndexToConsume();
+                                    return HsSpillingStrategy.Decision.NO_ACTION;
+                                })
+                        .build();
+        HsMemoryDataManager memoryDataManager =
+                new HsMemoryDataManager(
+                        1,
+                        bufferSize,
+                        bufferPool,
+                        spillingStrategy,
+                        new HsFileDataIndexImpl(1),
+                        dataFilePath.resolve(".data"),
+                        null);
+        memoryDataManager.setOutputMetrics(createTestingOutputMetrics());
+        HsDataView hsDataView = memoryDataManager.registerSubpartitionView(0, subpartitionView);
+        subpartitionView.setMemoryDataView(hsDataView);
+        subpartitionView.setDiskDataView(TestingHsDataView.NO_OP);
+
+        consumerThread.start();
+        // trigger request buffer.
+        memoryDataManager.append(ByteBuffer.allocate(bufferSize), 0, DataType.DATA_BUFFER);
     }
 
     @Test
@@ -212,6 +274,24 @@ class HsSubpartitionViewTest {
     }
 
     @Test
+    void testGetZeroBacklogNeedNotify() {
+        CompletableFuture<Void> notifyAvailableFuture = new CompletableFuture<>();
+        HsSubpartitionView subpartitionView =
+                createSubpartitionView(() -> notifyAvailableFuture.complete(null));
+        subpartitionView.setMemoryDataView(TestingHsDataView.NO_OP);
+        subpartitionView.setDiskDataView(
+                TestingHsDataView.builder().setGetBacklogSupplier(() -> 0).build());
+
+        AvailabilityWithBacklog availabilityAndBacklog =
+                subpartitionView.getAvailabilityAndBacklog(0);
+        assertThat(availabilityAndBacklog.getBacklog()).isZero();
+
+        assertThat(notifyAvailableFuture).isNotCompleted();
+        subpartitionView.notifyDataAvailable();
+        assertThat(notifyAvailableFuture).isCompleted();
+    }
+
+    @Test
     void testGetAvailabilityAndBacklogPositiveCredit() {
         HsSubpartitionView subpartitionView = createSubpartitionView();
         subpartitionView.setMemoryDataView(TestingHsDataView.NO_OP);
@@ -308,11 +388,11 @@ class HsSubpartitionViewTest {
         subpartitionView.setDiskDataView(diskDataView);
         subpartitionView.setMemoryDataView(TestingHsDataView.NO_OP);
 
-        assertThat(subpartitionView.getConsumingOffset()).isEqualTo(-1);
+        assertThat(subpartitionView.getConsumingOffset(true)).isEqualTo(-1);
         subpartitionView.getNextBuffer();
-        assertThat(subpartitionView.getConsumingOffset()).isEqualTo(0);
+        assertThat(subpartitionView.getConsumingOffset(true)).isEqualTo(0);
         subpartitionView.getNextBuffer();
-        assertThat(subpartitionView.getConsumingOffset()).isEqualTo(1);
+        assertThat(subpartitionView.getConsumingOffset(true)).isEqualTo(1);
     }
 
     @Test

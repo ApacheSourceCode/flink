@@ -33,6 +33,7 @@ import org.apache.flink.table.planner.plan.logical.{LogicalWindow, _}
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
 import org.apache.flink.table.planner.plan.nodes.calcite._
 import org.apache.flink.table.planner.plan.nodes.common.CommonPhysicalWindowTableFunction
+import org.apache.flink.table.planner.plan.nodes.exec.spec.LookupJoinHintSpec
 import org.apache.flink.table.planner.plan.nodes.logical._
 import org.apache.flink.table.planner.plan.nodes.physical.batch._
 import org.apache.flink.table.planner.plan.nodes.physical.stream._
@@ -2595,8 +2596,16 @@ class FlinkRelMdHandlerTestBase {
 
   // SELECT * FROM student AS T JOIN TemporalTable
   // FOR SYSTEM_TIME AS OF T.proctime AS D ON T.a = D.id
-  protected lazy val (batchLookupJoin, streamLookupJoin) = {
-    val temporalTableSource = new TestTemporalTable
+  protected lazy val (batchLookupJoin, streamLookupJoin) = getLookupJoins()
+
+  protected lazy val (batchLookupJoinWithPk, streamLookupJoinWithPk) = getLookupJoins(Array("id"))
+
+  protected lazy val (batchLookupJoinNotContainsPk, streamLookupJoinNotContainsPk) = getLookupJoins(
+    Array("name"))
+
+  protected def getLookupJoins(
+      primaryKeys: Array[String] = Array()): (BatchPhysicalLookupJoin, StreamPhysicalLookupJoin) = {
+    val temporalTableSource = new TestTemporalTable(keys = primaryKeys)
     val batchSourceOp = new TableSourceQueryOperation[RowData](temporalTableSource, true)
     val batchScan = relBuilder.queryOperation(batchSourceOp).build().asInstanceOf[TableScan]
     val batchLookupJoin = new BatchPhysicalLookupJoin(
@@ -2617,7 +2626,8 @@ class FlinkRelMdHandlerTestBase {
       streamScan.getTable,
       None,
       JoinInfo.of(ImmutableIntList.of(0), ImmutableIntList.of(0)),
-      JoinRelType.INNER
+      JoinRelType.INNER,
+      Option.empty[LookupJoinHintSpec]
     )
     (batchLookupJoin, streamLookupJoin)
   }

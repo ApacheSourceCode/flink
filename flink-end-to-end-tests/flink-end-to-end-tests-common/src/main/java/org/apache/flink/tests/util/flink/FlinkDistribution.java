@@ -29,6 +29,7 @@ import org.apache.flink.tests.util.AutoClosableProcess;
 import org.apache.flink.tests.util.TestUtils;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.function.FutureTaskWithException;
+import org.apache.flink.util.jackson.JacksonMapperFactory;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
@@ -75,7 +76,7 @@ public final class FlinkDistribution {
 
     private static final Logger LOG = LoggerFactory.getLogger(FlinkDistribution.class);
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JacksonMapperFactory.createObjectMapper();
 
     private static final Pattern ROOT_LOGGER_PATTERN = Pattern.compile("(rootLogger.level =).*");
     private static final String HIVE_DRIVER = "org.apache.hive.jdbc.HiveDriver";
@@ -263,6 +264,7 @@ public final class FlinkDistribution {
             AutoClosableProcess.create(commands.toArray(new String[0]))
                     .setStdInputs(job.getSqlLines().toArray(new String[0]))
                     .setStdoutProcessor(LOG::info) // logging the SQL statements and error message
+                    .setEnv(job.getEnvProcessor())
                     .runBlocking(timeout);
         } else if (job.getClientMode() == SQLJobSubmission.ClientMode.HIVE_JDBC) {
             FutureTaskWithException<Void> future =

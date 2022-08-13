@@ -43,7 +43,7 @@ public class HsSubpartitionView
     private int lastConsumedBufferIndex = -1;
 
     @GuardedBy("lock")
-    private boolean needNotify = false;
+    private boolean needNotify = true;
 
     @Nullable
     @GuardedBy("lock")
@@ -118,7 +118,12 @@ public class HsSubpartitionView
                     && cachedNextDataType == Buffer.DataType.EVENT_BUFFER) {
                 availability = true;
             }
-            return new AvailabilityWithBacklog(availability, getSubpartitionBacklog());
+
+            int backlog = getSubpartitionBacklog();
+            if (backlog == 0) {
+                needNotify = true;
+            }
+            return new AvailabilityWithBacklog(availability, backlog);
         }
     }
 
@@ -134,8 +139,12 @@ public class HsSubpartitionView
         }
     }
 
+    @SuppressWarnings("FieldAccessNotGuarded")
     @Override
-    public int getConsumingOffset() {
+    public int getConsumingOffset(boolean withLock) {
+        if (!withLock) {
+            return lastConsumedBufferIndex;
+        }
         synchronized (lock) {
             return lastConsumedBufferIndex;
         }
