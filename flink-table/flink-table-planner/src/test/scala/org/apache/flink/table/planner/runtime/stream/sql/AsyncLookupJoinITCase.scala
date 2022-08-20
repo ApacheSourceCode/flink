@@ -311,12 +311,9 @@ class AsyncLookupJoinITCase(
   @Test
   def testAggAndAsyncLeftJoinWithTryResolveMode(): Unit = {
     // will require a sync lookup function because input has update on TRY_RESOLVE mode
-    // only legacy source can provide both sync and async functions
-    if (!legacyTableSource) {
-      thrown.expectMessage(
-        "Required sync lookup function by planner, but table [default_catalog, default_database, user_table]does not offer a valid lookup function")
-      thrown.expect(classOf[TableException])
-    }
+    // there's no test sources that have both sync and async lookup functions
+    thrown.expectMessage("Required sync lookup function by planner")
+    thrown.expect(classOf[TableException])
     tEnv.getConfig.set(
       OptimizerConfigOptions.TABLE_OPTIMIZER_NONDETERMINISTIC_UPDATE_STRATEGY,
       OptimizerConfigOptions.NonDeterministicUpdateStrategy.TRY_RESOLVE)
@@ -475,7 +472,7 @@ class AsyncLookupJoinITCase(
 
     val expected = if (legacyTableSource) {
       // test legacy lookup source do not support lookup threshold
-      // for real async lookup functions(both new and legacy api) do support retry
+      // also legacy lookup source do not support retry
       Seq("1,12,Julian,Julian", "2,15,Hello,Jark", "3,15,Fabian,Fabian")
     } else {
       // the user_table_with_lookup_threshold3 will return null result before 3rd lookup
@@ -503,14 +500,7 @@ class AsyncLookupJoinITCase(
       .addSink(sink)
     env.execute()
 
-    val expected = if (legacyTableSource) {
-      // test legacy lookup source do not support lookup threshold
-      // for real async lookup functions(both new and legacy api) do support retry
-      Seq("1,12,Julian,Julian", "2,15,Hello,Jark", "3,15,Fabian,Fabian")
-    } else {
-      // TODO retry on async is not supported currently, this should be updated after supported
-      Seq()
-    }
+    val expected = Seq("1,12,Julian,Julian", "2,15,Hello,Jark", "3,15,Fabian,Fabian")
     assertEquals(expected.sorted, sink.getAppendResults.sorted)
   }
 
