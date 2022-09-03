@@ -41,7 +41,7 @@ public class CancelOperationHeaders extends AbstactOperationHeaders {
 
     @Override
     public HttpMethodWrapper getHttpMethod() {
-        return HttpMethodWrapper.PUT;
+        return HttpMethodWrapper.POST;
     }
 
     @Override
@@ -51,5 +51,10 @@ public class CancelOperationHeaders extends AbstactOperationHeaders {
 
     public static CancelOperationHeaders getInstance() {
         return INSTANCE;
+    }
+
+    @Override
+    public String operationId() {
+        return "cancelOperation";
     }
 }
